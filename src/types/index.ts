@@ -94,6 +94,7 @@ export interface ExecutionPhase {
 
 export interface ExecutionPlan {
   id: string;
+  originalMessage: string; // Original user request - NEVER lose this context
   phases: ExecutionPhase[];
   estimatedModels: number;
   currentPhase: number;

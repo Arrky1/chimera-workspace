@@ -216,7 +216,8 @@ export function classifyTask(intent: ParsedIntent, input: string): {
 // Create execution plan
 export function createExecutionPlan(
   intent: ParsedIntent,
-  classification: ReturnType<typeof classifyTask>
+  classification: ReturnType<typeof classifyTask>,
+  originalMessage: string // Now required!
 ): ExecutionPlan {
   const phases: ExecutionPhase[] = [];
   const availableModels = getAvailableModels().filter(m => m.available);
@@ -227,6 +228,7 @@ export function createExecutionPlan(
     if (availableModels.some(m => m.provider === 'openai')) providers.push('openai');
     if (availableModels.some(m => m.provider === 'gemini')) providers.push('gemini');
     if (availableModels.some(m => m.provider === 'qwen')) providers.push('qwen');
+    if (availableModels.some(m => m.provider === 'deepseek')) providers.push('deepseek');
     return providers;
   };
 
@@ -249,7 +251,7 @@ export function createExecutionPlan(
       mode: 'swarm',
       name: 'Parallel Implementation (Swarm)',
       status: 'pending',
-      models: ['claude'], // Swarm uses Claude agents
+      models: getProviders(), // Swarm uses all available models
       progress: 0,
     });
   } else {
@@ -277,6 +279,7 @@ export function createExecutionPlan(
 
   return {
     id: `plan-${Date.now()}`,
+    originalMessage, // Store the original request!
     phases,
     estimatedModels: phases.reduce((sum, p) => sum + p.models.length, 0),
     currentPhase: 0,
