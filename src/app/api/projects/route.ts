@@ -147,13 +147,28 @@ async function cloneAndAnalyze(project: Project) {
     const summary = generateSummary(issues);
 
     // Convert to ProjectIssue format
+    // Map AnalysisIssue.type to ProjectIssue.category
+    const typeToCategory = (type: string): ProjectIssue['category'] => {
+      const mapping: Record<string, ProjectIssue['category']> = {
+        'security': 'security',
+        'performance': 'performance',
+        'code_quality': 'code_quality',
+        'architecture': 'architecture',
+        'accessibility': 'accessibility',
+        'dependencies': 'code_quality',
+        'tests': 'code_quality',
+        'documentation': 'code_quality',
+      };
+      return mapping[type] || 'code_quality';
+    };
+
     const projectIssues: ProjectIssue[] = issues.map(issue => ({
       id: issue.id,
       projectId: project.id,
       title: issue.title,
       description: issue.description,
       severity: issue.severity,
-      category: issue.category as ProjectIssue['category'],
+      category: typeToCategory(issue.type),
       file: issue.file,
       line: issue.line,
       canAutoFix: issue.autoFixable || false,
