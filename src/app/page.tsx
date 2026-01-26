@@ -1,12 +1,23 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { Header, ChatInput, MessageList, ProjectsDashboard, ActivityFeed, useActivityFeed } from '@/components';
+import {
+  Header,
+  ChatInput,
+  MessageList,
+  ProjectsDashboard,
+  ActivityFeed,
+  useActivityFeed,
+  OrchestrationGraph,
+  ModelContributionStats,
+  EventLog,
+  useEventLog,
+} from '@/components';
 import type { ModelActivity } from '@/components';
-import { Message, ModelConfig, ClarificationRequest, ExecutionPlan, ModelProvider } from '@/types';
-import { MessageSquare, FolderGit2, Settings } from 'lucide-react';
+import { Message, ModelConfig, ClarificationRequest, ExecutionPlan, ModelProvider, ExecutionMode } from '@/types';
+import { MessageSquare, FolderGit2, Settings, Activity } from 'lucide-react';
 
-type TabType = 'chat' | 'projects' | 'settings';
+type TabType = 'chat' | 'projects' | 'monitor' | 'settings';
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState<TabType>('chat');
@@ -20,6 +31,16 @@ export default function Home() {
   } | null>(null);
   const [activityExpanded, setActivityExpanded] = useState(true);
   const { activities, addActivity, updateActivity, clearActivities } = useActivityFeed();
+  const { events, addEvent, clearEvents, exportEvents } = useEventLog();
+  const [currentMode, setCurrentMode] = useState<ExecutionMode>('single');
+  const [modelStats, setModelStats] = useState<{
+    provider: ModelProvider;
+    name: string;
+    tokens: number;
+    tasks: number;
+    avgTime: number;
+    contribution: number;
+  }[]>([]);
 
   // Fetch available models on mount
   useEffect(() => {
@@ -249,6 +270,7 @@ export default function Home() {
   const tabs = [
     { id: 'chat' as TabType, label: 'Chat', icon: MessageSquare },
     { id: 'projects' as TabType, label: 'Projects', icon: FolderGit2 },
+    { id: 'monitor' as TabType, label: 'Monitor', icon: Activity },
     { id: 'settings' as TabType, label: 'Settings', icon: Settings },
   ];
 
@@ -309,6 +331,98 @@ export default function Home() {
         )}
 
         {activeTab === 'projects' && <ProjectsDashboard />}
+
+        {activeTab === 'monitor' && (
+          <div className="flex-1 p-6 overflow-y-auto">
+            <div className="max-w-7xl mx-auto space-y-6">
+              <h2 className="text-xl font-semibold text-white">Orchestration Monitor</h2>
+
+              {/* Orchestration Graph */}
+              <div className="rounded-xl border border-orchestrator-border bg-orchestrator-card p-4">
+                <h3 className="text-sm font-medium text-white mb-4">AI Team Workflow</h3>
+                <OrchestrationGraph
+                  mode={currentMode}
+                  activeModels={models.filter(m => m.available).map(m => ({
+                    provider: m.provider,
+                    name: m.name,
+                    status: activities.find(a => a.model === m.provider)?.status === 'thinking' ||
+                            activities.find(a => a.model === m.provider)?.status === 'generating'
+                      ? 'active' as const
+                      : 'idle' as const,
+                    task: activities.find(a => a.model === m.provider)?.task,
+                    tokens: modelStats.find(s => s.provider === m.provider)?.tokens,
+                  }))}
+                />
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                {/* Model Statistics */}
+                <ModelContributionStats
+                  stats={modelStats.length > 0 ? modelStats : models.filter(m => m.available).map(m => ({
+                    provider: m.provider,
+                    name: m.name,
+                    tokens: Math.floor(Math.random() * 10000),
+                    tasks: Math.floor(Math.random() * 20),
+                    avgTime: Math.random() * 5 + 1,
+                    contribution: 100 / models.filter(m => m.available).length,
+                  }))}
+                  totalTokens={modelStats.reduce((sum, s) => sum + s.tokens, 0) || 25000}
+                  totalTasks={modelStats.reduce((sum, s) => sum + s.tasks, 0) || 42}
+                />
+
+                {/* Event Log */}
+                <EventLog
+                  events={events}
+                  onClear={clearEvents}
+                  onExport={exportEvents}
+                  maxHeight="300px"
+                />
+              </div>
+
+              {/* AI Team Members */}
+              <div className="rounded-xl border border-orchestrator-border bg-orchestrator-card p-4">
+                <h3 className="text-sm font-medium text-white mb-4">AI Development Team</h3>
+                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
+                  {[
+                    { name: 'Alex', role: 'Lead Architect', model: 'Claude Opus', provider: 'claude' as ModelProvider, emoji: '🧠', specialty: 'Architecture & Complex Tasks' },
+                    { name: 'Max', role: 'Senior Developer', model: 'GPT-5.2', provider: 'openai' as ModelProvider, emoji: '💻', specialty: 'Code & Mathematics' },
+                    { name: 'Lena', role: 'QA Engineer', model: 'Gemini Pro', provider: 'gemini' as ModelProvider, emoji: '🔍', specialty: 'Testing & Multimodal' },
+                    { name: 'Ivan', role: 'Research Engineer', model: 'DeepSeek R1', provider: 'deepseek' as ModelProvider, emoji: '🔬', specialty: 'Deep Reasoning' },
+                    { name: 'Dasha', role: 'Fast Coder', model: 'Claude Sonnet', provider: 'claude' as ModelProvider, emoji: '⚡', specialty: 'Quick Tasks' },
+                  ].map((member) => {
+                    const isAvailable = models.some(m => m.provider === member.provider && m.available);
+                    const isActive = activities.some(a => a.model === member.provider && (a.status === 'thinking' || a.status === 'generating'));
+
+                    return (
+                      <div
+                        key={member.name}
+                        className={`p-4 rounded-lg border transition-all ${
+                          isActive
+                            ? 'border-orchestrator-accent bg-orchestrator-accent/10'
+                            : isAvailable
+                            ? 'border-orchestrator-border bg-orchestrator-bg'
+                            : 'border-orchestrator-border/50 bg-orchestrator-bg/50 opacity-50'
+                        }`}
+                      >
+                        <div className="text-2xl mb-2">{member.emoji}</div>
+                        <div className="text-sm font-medium text-white">{member.name}</div>
+                        <div className="text-xs text-orchestrator-accent">{member.role}</div>
+                        <div className="text-xs text-gray-500 mt-1">{member.model}</div>
+                        <div className="text-xs text-gray-400 mt-2">{member.specialty}</div>
+                        {isActive && (
+                          <div className="mt-2 flex items-center gap-1">
+                            <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
+                            <span className="text-xs text-green-400">Working...</span>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
 
         {activeTab === 'settings' && (
           <div className="flex-1 p-6 overflow-y-auto">

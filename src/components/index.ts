@@ -7,3 +7,6 @@ export { ProjectRevision } from './ProjectRevision';
 export { ProjectsDashboard } from './ProjectsDashboard';
 export { ActivityFeed, useActivityFeed } from './ActivityFeed';
 export type { ModelActivity } from './ActivityFeed';
+export { OrchestrationGraph, ModelContributionStats } from './OrchestrationGraph';
+export { EventLog, useEventLog } from './EventLog';
+export type { LogEvent, EventType, EventSeverity } from './EventLog';
