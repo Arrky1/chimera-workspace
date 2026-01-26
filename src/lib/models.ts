@@ -24,19 +24,19 @@ export const MODELS: ModelConfig[] = [
   },
   // OpenAI models
   {
+    id: 'gpt-5.2',
+    provider: 'openai',
+    name: 'GPT-5.2',
+    apiModel: 'gpt-5.2',
+    strengths: ['code', 'architecture', 'complex_reasoning', 'math', 'multimodal'],
+    available: true,
+  },
+  {
     id: 'gpt-4o',
     provider: 'openai',
     name: 'GPT-4o',
     apiModel: 'gpt-4o',
     strengths: ['math', 'stem', 'reasoning', 'multimodal'],
-    available: true,
-  },
-  {
-    id: 'gpt-4-turbo',
-    provider: 'openai',
-    name: 'GPT-4 Turbo',
-    apiModel: 'gpt-4-turbo',
-    strengths: ['code_review', 'debugging', 'implementation'],
     available: true,
   },
   {
