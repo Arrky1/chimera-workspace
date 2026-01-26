@@ -14,6 +14,22 @@ import { getTeamManager } from '@/lib/team';
 import { getToolDescriptions, parseToolCalls, executeToolCalls } from '@/lib/mcp';
 import { generateWithModel, getAvailableModels, getBestModelForTask } from '@/lib/models';
 import { ExecutionPlan, ModelProvider } from '@/types';
+import {
+  OrchestrateRequestSchema,
+  validateOrThrow,
+} from '@/lib/schemas';
+import {
+  createExecution,
+  getExecution,
+  updateExecution,
+  startPhase,
+  completePhase,
+  failPhase,
+  recordModelCall,
+  checkIdempotency,
+  setIdempotency,
+  generateExecutionId,
+} from '@/lib/execution-store';
 
 // Rate limiting for parallel requests
 const MAX_CONCURRENT_REQUESTS = 3;
@@ -77,30 +93,88 @@ async function executeWithRateLimit<T>(
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { message, clarificationAnswers, confirmedPlan } = body;
+
+    // Validate request with Zod schema
+    const validatedRequest = validateOrThrow(OrchestrateRequestSchema, body);
+    const { message, clarificationAnswers, confirmedPlan, idempotencyKey, executionId } = validatedRequest;
+
+    // Idempotency check - return existing execution if duplicate request
+    if (idempotencyKey) {
+      const existingExecutionId = await checkIdempotency(idempotencyKey);
+      if (existingExecutionId) {
+        const existingState = await getExecution(existingExecutionId);
+        if (existingState) {
+          console.log(`[Orchestrator] Returning cached execution: ${existingExecutionId}`);
+          return NextResponse.json({
+            type: 'result',
+            message: 'Запрос уже был обработан (идемпотентность)',
+            plan: existingState.plan,
+            executionId: existingExecutionId,
+            cached: true,
+          });
+        }
+      }
+    }
+
+    // Resume existing execution if executionId provided
+    if (executionId) {
+      const existingState = await getExecution(executionId);
+      if (existingState) {
+        if (existingState.status === 'running') {
+          return NextResponse.json({
+            type: 'error',
+            message: 'Выполнение уже в процессе',
+            executionId,
+          });
+        }
+        if (existingState.status === 'completed') {
+          return NextResponse.json({
+            type: 'execution_complete',
+            plan: existingState.plan,
+            results: Object.values(existingState.phaseResults).map(r => ({
+              phase: r.phaseId,
+              result: r.result,
+            })),
+            executionId,
+          });
+        }
+      }
+    }
 
     // If we have clarification answers, process them and continue
     if (clarificationAnswers) {
-      return handleClarificationResponse(message, clarificationAnswers);
+      return handleClarificationResponse(message, clarificationAnswers, idempotencyKey);
     }
 
     // If plan is confirmed, execute it
     if (confirmedPlan) {
-      return handlePlanExecution(confirmedPlan);
+      // Cast to ExecutionPlan from @/types (validated by schema)
+      return handlePlanExecution(confirmedPlan as ExecutionPlan, idempotencyKey);
     }
 
     // Initial message processing
-    return handleInitialMessage(message);
+    return handleInitialMessage(message, idempotencyKey);
   } catch (error) {
     console.error('Orchestrator error:', error);
+
+    // Check if it's a validation error
+    const isValidationError = error instanceof Error && error.message.startsWith('Validation failed');
+
     return NextResponse.json(
-      { error: 'Internal server error', details: error instanceof Error ? error.message : 'Unknown error' },
-      { status: 500 }
+      {
+        type: 'error',
+        message: isValidationError ? 'Ошибка валидации запроса' : 'Внутренняя ошибка сервера',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      { status: isValidationError ? 400 : 500 }
     );
   }
 }
 
-async function handleInitialMessage(message: string) {
+async function handleInitialMessage(message: string, idempotencyKey?: string) {
+  // Generate execution ID early for tracking
+  const executionId = generateExecutionId();
+
   // 1. Parse intent
   const intent = await parseIntent(message);
 
@@ -109,7 +183,7 @@ async function handleInitialMessage(message: string) {
 
   // 3. If high confidence and no critical ambiguities, proceed directly
   if (intent.confidence >= 0.85 && ambiguities.filter(a => a.severity === 'high').length === 0) {
-    return proceedWithExecution(message, intent);
+    return proceedWithExecution(message, intent, idempotencyKey, executionId);
   }
 
   // 4. Generate clarification questions
@@ -121,14 +195,19 @@ async function handleInitialMessage(message: string) {
       message: 'Для корректного выполнения задачи, пожалуйста, уточните детали:',
       clarification: clarificationRequest,
       intent,
+      executionId, // Include for potential resume
     });
   }
 
   // 5. No ambiguities found, proceed
-  return proceedWithExecution(message, intent);
+  return proceedWithExecution(message, intent, idempotencyKey, executionId);
 }
 
-async function handleClarificationResponse(originalMessage: string, answers: Record<string, string>) {
+async function handleClarificationResponse(
+  originalMessage: string,
+  answers: Record<string, string>,
+  idempotencyKey?: string
+) {
   // Re-parse with clarified context
   const clarifiedContext = Object.values(answers).join('. ');
   const enrichedMessage = `${originalMessage}\n\nУточнения: ${clarifiedContext}`;
@@ -136,45 +215,71 @@ async function handleClarificationResponse(originalMessage: string, answers: Rec
   const intent = await parseIntent(enrichedMessage);
   intent.confidence = 0.95; // Bump confidence since we have clarifications
 
-  return proceedWithExecution(enrichedMessage, intent);
+  return proceedWithExecution(enrichedMessage, intent, idempotencyKey);
 }
 
-async function proceedWithExecution(message: string, intent: Awaited<ReturnType<typeof parseIntent>>) {
+async function proceedWithExecution(
+  message: string,
+  intent: Awaited<ReturnType<typeof parseIntent>>,
+  idempotencyKey?: string,
+  existingExecutionId?: string
+) {
   // 1. Classify task
   const classification = classifyTask(intent, message);
 
   // 2. Create execution plan WITH original message
   const plan = createExecutionPlan(intent, classification, message);
 
-  // 3. For simple tasks, execute immediately
-  if (classification.complexity === 'simple') {
-    return executeSimpleTask(message, intent, plan);
+  // 3. Create execution state for persistence
+  const executionState = await createExecution(plan, {
+    idempotencyKey,
+    source: 'api',
+  });
+
+  // Use existing execution ID if provided, otherwise use newly created one
+  const executionId = existingExecutionId || executionState.id;
+
+  // Set idempotency mapping if key provided
+  if (idempotencyKey) {
+    await setIdempotency(idempotencyKey, executionId);
   }
 
-  // 4. For complex tasks, return plan for confirmation
+  // 4. For simple tasks, execute immediately
+  if (classification.complexity === 'simple') {
+    return executeSimpleTask(message, intent, plan, executionId);
+  }
+
+  // 5. For complex tasks, return plan for confirmation
   return NextResponse.json({
     type: 'plan',
     message: 'Вот план выполнения задачи:',
     plan,
     classification,
     requiresConfirmation: true,
+    executionId,
   });
 }
 
 async function executeSimpleTask(
   message: string,
   intent: Awaited<ReturnType<typeof parseIntent>>,
-  plan: ExecutionPlan
+  plan: ExecutionPlan,
+  executionId: string
 ) {
   const availableModels = getAvailableModels();
   const bestModel = getBestModelForTask('code', availableModels.filter(m => m.available));
 
   if (!bestModel) {
+    await failPhase(executionId, plan.phases[0].id, 'No models available');
     return NextResponse.json({
       type: 'error',
       message: 'Нет доступных моделей. Проверьте API ключи.',
+      executionId,
     });
   }
+
+  // Start phase tracking
+  await startPhase(executionId, plan.phases[0].id);
 
   // Include available tools in system prompt
   const toolsDescription = getToolDescriptions();
@@ -186,12 +291,25 @@ ${toolsDescription}
 To use a tool, format your response as:
 <tool_use name="tool_name">{"param": "value"}</tool_use>`;
 
+  const startTime = Date.now();
   const response = await withRetry(() => generateWithModel(
     bestModel.provider,
     bestModel.apiModel,
     message,
     systemPrompt
   ));
+
+  // Record model call for audit
+  await recordModelCall(executionId, plan.phases[0].id, {
+    provider: bestModel.provider,
+    modelId: bestModel.apiModel,
+    prompt: message,
+    systemPrompt,
+    response: response.content,
+    startedAt: startTime,
+    completedAt: Date.now(),
+    latency: response.latency,
+  });
 
   // Process any tool calls in the response
   const toolCalls = parseToolCalls(response.content);
@@ -213,6 +331,9 @@ To use a tool, format your response as:
   plan.phases[0].status = 'completed';
   plan.phases[0].progress = 100;
 
+  // Complete phase in execution store
+  await completePhase(executionId, plan.phases[0].id, { content: finalContent });
+
   return NextResponse.json({
     type: 'result',
     message: finalContent,
@@ -220,10 +341,11 @@ To use a tool, format your response as:
     modelUsed: bestModel.name,
     latency: response.latency,
     toolsUsed: toolCalls.length > 0 ? toolCalls.map(t => t.toolName) : undefined,
+    executionId,
   });
 }
 
-async function handlePlanExecution(plan: ExecutionPlan) {
+async function handlePlanExecution(plan: ExecutionPlan, idempotencyKey?: string) {
   const results: Array<{ phase: string; result: unknown }> = [];
   const originalMessage = plan.originalMessage; // Get the original context!
 
@@ -234,10 +356,28 @@ async function handlePlanExecution(plan: ExecutionPlan) {
     }, { status: 400 });
   }
 
+  // Create execution state for the confirmed plan
+  const executionState = await createExecution(plan, {
+    idempotencyKey,
+    source: 'api',
+  });
+  const executionId = executionState.id;
+
+  // Set idempotency if provided
+  if (idempotencyKey) {
+    await setIdempotency(idempotencyKey, executionId);
+  }
+
+  // Update to running status
+  await updateExecution(executionId, { status: 'running' });
+
   for (let i = 0; i < plan.phases.length; i++) {
     const phase = plan.phases[i];
     plan.currentPhase = i;
     phase.status = 'running';
+
+    // Start phase tracking
+    await startPhase(executionId, phase.id);
 
     try {
       let phaseResult;
@@ -284,13 +424,23 @@ async function handlePlanExecution(plan: ExecutionPlan) {
       phase.progress = 100;
       phase.result = phaseResult as typeof phase.result;
       results.push({ phase: phase.name, result: phaseResult });
+
+      // Complete phase in execution store
+      await completePhase(executionId, phase.id, phaseResult);
     } catch (error) {
       phase.status = 'failed';
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       console.error(`Phase ${phase.name} failed:`, error);
       results.push({
         phase: phase.name,
-        result: { error: error instanceof Error ? error.message : 'Unknown error' }
+        result: { error: errorMessage }
       });
+
+      // Fail phase in execution store
+      await failPhase(executionId, phase.id, errorMessage);
+
+      // Stop execution on failure
+      break;
     }
   }
 
@@ -300,6 +450,7 @@ async function handlePlanExecution(plan: ExecutionPlan) {
     type: 'execution_complete',
     plan,
     results,
+    executionId,
   });
 }
 

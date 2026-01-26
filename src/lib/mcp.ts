@@ -3,7 +3,234 @@
  *
  * MCP allows AI models to interact with external tools and services.
  * This implementation provides a flexible way to add capabilities to the AI team.
+ *
+ * Includes:
+ * - Tool registration and execution
+ * - Access policies (allow/deny lists, rate limits, risk levels)
+ * - Audit logging for tool usage
  */
+
+// =============================================================================
+// Access Policy Types
+// =============================================================================
+
+export type RiskLevel = 'low' | 'medium' | 'high' | 'critical';
+
+export interface ToolPolicy {
+  toolName: string;
+  enabled: boolean;
+  riskLevel: RiskLevel;
+  requiresApproval: boolean;
+  allowedRoles?: string[];  // Empty = all roles allowed
+  deniedRoles?: string[];
+  rateLimit?: {
+    maxCalls: number;
+    windowMs: number;
+  };
+  parameterRestrictions?: Record<string, {
+    allowedValues?: unknown[];
+    deniedValues?: unknown[];
+    maxLength?: number;
+  }>;
+}
+
+export interface PolicyContext {
+  userId?: string;
+  role?: string;
+  executionId?: string;
+  source?: string;
+}
+
+// Default policies for built-in tools
+const defaultPolicies: Record<string, Partial<ToolPolicy>> = {
+  'web_search': { riskLevel: 'low', enabled: true, requiresApproval: false },
+  'file_system': { riskLevel: 'high', enabled: true, requiresApproval: true },
+  'github': { riskLevel: 'medium', enabled: true, requiresApproval: false },
+  'generate_image': { riskLevel: 'low', enabled: true, requiresApproval: false },
+  'execute_code': { riskLevel: 'critical', enabled: false, requiresApproval: true },
+  'database': { riskLevel: 'critical', enabled: false, requiresApproval: true },
+};
+
+// Tool usage tracking for rate limiting
+const toolUsageTracker = new Map<string, { count: number; windowStart: number }>();
+
+// Tool access audit log (in-memory, last 100 entries)
+const toolAccessLog: ToolAccessLogEntry[] = [];
+const MAX_ACCESS_LOG_SIZE = 100;
+
+export interface ToolAccessLogEntry {
+  timestamp: number;
+  toolName: string;
+  allowed: boolean;
+  reason?: string;
+  context: PolicyContext;
+  params: Record<string, unknown>;
+}
+
+// =============================================================================
+// Policy Management
+// =============================================================================
+
+// Custom policies override defaults
+const customPolicies = new Map<string, ToolPolicy>();
+
+/**
+ * Set a custom policy for a tool
+ */
+export function setToolPolicy(policy: ToolPolicy): void {
+  customPolicies.set(policy.toolName, policy);
+}
+
+/**
+ * Get effective policy for a tool (custom overrides default)
+ */
+export function getToolPolicy(toolName: string): ToolPolicy {
+  const custom = customPolicies.get(toolName);
+  if (custom) return custom;
+
+  const defaultPolicy = defaultPolicies[toolName] || {};
+  return {
+    toolName,
+    enabled: defaultPolicy.enabled ?? true,
+    riskLevel: defaultPolicy.riskLevel ?? 'medium',
+    requiresApproval: defaultPolicy.requiresApproval ?? false,
+    ...defaultPolicy,
+  };
+}
+
+/**
+ * Check if tool access is allowed
+ */
+export function checkToolAccess(
+  toolName: string,
+  params: Record<string, unknown>,
+  context: PolicyContext = {}
+): { allowed: boolean; reason?: string } {
+  const policy = getToolPolicy(toolName);
+
+  // Check if tool is enabled
+  if (!policy.enabled) {
+    logToolAccess(toolName, false, 'Tool is disabled', context, params);
+    return { allowed: false, reason: `Tool "${toolName}" is disabled` };
+  }
+
+  // Check role restrictions
+  if (context.role) {
+    if (policy.deniedRoles?.includes(context.role)) {
+      logToolAccess(toolName, false, 'Role denied', context, params);
+      return { allowed: false, reason: `Role "${context.role}" is not allowed to use this tool` };
+    }
+    if (policy.allowedRoles && policy.allowedRoles.length > 0 && !policy.allowedRoles.includes(context.role)) {
+      logToolAccess(toolName, false, 'Role not in allowed list', context, params);
+      return { allowed: false, reason: `Role "${context.role}" is not in the allowed list` };
+    }
+  }
+
+  // Check rate limit
+  if (policy.rateLimit) {
+    const key = `${toolName}:${context.userId || 'global'}`;
+    const usage = toolUsageTracker.get(key);
+    const now = Date.now();
+
+    if (usage) {
+      // Check if window has expired
+      if (now - usage.windowStart > policy.rateLimit.windowMs) {
+        // Reset window
+        toolUsageTracker.set(key, { count: 1, windowStart: now });
+      } else if (usage.count >= policy.rateLimit.maxCalls) {
+        logToolAccess(toolName, false, 'Rate limit exceeded', context, params);
+        return { allowed: false, reason: `Rate limit exceeded for "${toolName}"` };
+      } else {
+        usage.count++;
+      }
+    } else {
+      toolUsageTracker.set(key, { count: 1, windowStart: now });
+    }
+  }
+
+  // Check parameter restrictions
+  if (policy.parameterRestrictions) {
+    for (const [paramName, restrictions] of Object.entries(policy.parameterRestrictions)) {
+      const value = params[paramName];
+
+      if (restrictions.deniedValues?.includes(value)) {
+        logToolAccess(toolName, false, `Denied parameter value: ${paramName}`, context, params);
+        return { allowed: false, reason: `Parameter "${paramName}" has a denied value` };
+      }
+
+      if (restrictions.allowedValues && !restrictions.allowedValues.includes(value)) {
+        logToolAccess(toolName, false, `Parameter value not allowed: ${paramName}`, context, params);
+        return { allowed: false, reason: `Parameter "${paramName}" value is not in allowed list` };
+      }
+
+      if (restrictions.maxLength && typeof value === 'string' && value.length > restrictions.maxLength) {
+        logToolAccess(toolName, false, `Parameter too long: ${paramName}`, context, params);
+        return { allowed: false, reason: `Parameter "${paramName}" exceeds max length` };
+      }
+    }
+  }
+
+  logToolAccess(toolName, true, undefined, context, params);
+  return { allowed: true };
+}
+
+/**
+ * Log tool access attempt
+ */
+function logToolAccess(
+  toolName: string,
+  allowed: boolean,
+  reason: string | undefined,
+  context: PolicyContext,
+  params: Record<string, unknown>
+): void {
+  toolAccessLog.push({
+    timestamp: Date.now(),
+    toolName,
+    allowed,
+    reason,
+    context,
+    params,
+  });
+
+  // Trim log if too large
+  if (toolAccessLog.length > MAX_ACCESS_LOG_SIZE) {
+    toolAccessLog.splice(0, 10);
+  }
+}
+
+/**
+ * Get tool access log
+ */
+export function getToolAccessLog(filter?: { toolName?: string; allowed?: boolean }): ToolAccessLogEntry[] {
+  let log = [...toolAccessLog];
+
+  if (filter?.toolName) {
+    log = log.filter(e => e.toolName === filter.toolName);
+  }
+  if (filter?.allowed !== undefined) {
+    log = log.filter(e => e.allowed === filter.allowed);
+  }
+
+  return log.sort((a, b) => b.timestamp - a.timestamp);
+}
+
+/**
+ * Get all policies
+ */
+export function getAllPolicies(): ToolPolicy[] {
+  const allToolNames = new Set([
+    ...Object.keys(defaultPolicies),
+    ...customPolicies.keys(),
+    ...Array.from(mcpTools.keys()),
+  ]);
+
+  return Array.from(allToolNames).map(name => getToolPolicy(name));
+}
+
+// =============================================================================
+// Tool Types
+// =============================================================================
 
 export interface MCPTool {
   name: string;
@@ -55,15 +282,34 @@ export function getAvailableTools(): MCPTool[] {
 }
 
 /**
- * Execute a tool by name
+ * Execute a tool by name (with policy checking)
  */
 export async function executeTool(
   toolName: string,
-  params: Record<string, unknown>
+  params: Record<string, unknown>,
+  context: PolicyContext = {}
 ): Promise<MCPToolResult> {
   const tool = mcpTools.get(toolName);
   if (!tool) {
     return { success: false, error: `Tool "${toolName}" not found` };
+  }
+
+  // Check access policy
+  const accessCheck = checkToolAccess(toolName, params, context);
+  if (!accessCheck.allowed) {
+    return { success: false, error: accessCheck.reason || 'Access denied' };
+  }
+
+  // Check if approval is required
+  const policy = getToolPolicy(toolName);
+  if (policy.requiresApproval) {
+    // For now, return a special response indicating approval needed
+    // In a full implementation, this would integrate with an approval workflow
+    return {
+      success: false,
+      error: `Tool "${toolName}" requires approval before execution (risk level: ${policy.riskLevel})`,
+      data: { requiresApproval: true, riskLevel: policy.riskLevel },
+    };
   }
 
   try {
@@ -350,14 +596,56 @@ export function parseToolCalls(
  * Execute tool calls and format results
  */
 export async function executeToolCalls(
-  toolCalls: { toolName: string; params: Record<string, unknown> }[]
+  toolCalls: { toolName: string; params: Record<string, unknown> }[],
+  context: PolicyContext = {}
 ): Promise<{ toolName: string; result: MCPToolResult }[]> {
   const results: { toolName: string; result: MCPToolResult }[] = [];
 
   for (const call of toolCalls) {
-    const result = await executeTool(call.toolName, call.params);
+    const result = await executeTool(call.toolName, call.params, context);
     results.push({ toolName: call.toolName, result });
   }
 
   return results;
+}
+
+/**
+ * Get tools available for a specific context (filtered by policy)
+ */
+export function getToolsForContext(context: PolicyContext = {}): MCPTool[] {
+  return getAvailableTools().filter(tool => {
+    const policy = getToolPolicy(tool.name);
+    if (!policy.enabled) return false;
+
+    if (context.role) {
+      if (policy.deniedRoles?.includes(context.role)) return false;
+      if (policy.allowedRoles && policy.allowedRoles.length > 0 && !policy.allowedRoles.includes(context.role)) {
+        return false;
+      }
+    }
+
+    return true;
+  });
+}
+
+/**
+ * Get policy summary for all tools (for UI display)
+ */
+export function getToolPolicySummary(): {
+  name: string;
+  description: string;
+  riskLevel: RiskLevel;
+  enabled: boolean;
+  requiresApproval: boolean;
+}[] {
+  return getAvailableTools().map(tool => {
+    const policy = getToolPolicy(tool.name);
+    return {
+      name: tool.name,
+      description: tool.description,
+      riskLevel: policy.riskLevel,
+      enabled: policy.enabled,
+      requiresApproval: policy.requiresApproval,
+    };
+  });
 }

@@ -92,26 +92,31 @@ Open [http://localhost:3000](http://localhost:3000)
 src/
 ├── app/
 │   ├── api/
-│   │   ├── orchestrate/   # Main orchestration endpoint
-│   │   ├── team/          # Team management API
-│   │   ├── projects/      # GitHub project analysis
-│   │   └── auth/          # Authentication
-│   ├── login/             # Login page
-│   └── page.tsx           # Main dashboard
+│   │   ├── orchestrate/      # Main orchestration endpoint
+│   │   │   ├── route.ts      # Standard request/response
+│   │   │   └── stream/       # SSE streaming endpoint
+│   │   │       └── route.ts  # Real-time updates + cancellation
+│   │   ├── team/             # Team management API
+│   │   ├── projects/         # GitHub project analysis
+│   │   └── auth/             # Authentication
+│   ├── login/                # Login page
+│   └── page.tsx              # Main dashboard
 ├── components/
-│   ├── ActivityFeed.tsx   # Live AI activity display
+│   ├── ActivityFeed.tsx      # Live AI activity display
 │   ├── OrchestrationGraph.tsx # Visual workflow graph
-│   ├── EventLog.tsx       # System event log
+│   ├── EventLog.tsx          # System event log
 │   ├── ProjectsDashboard.tsx # GitHub projects
 │   └── ...
 ├── lib/
-│   ├── orchestrator.ts    # Core orchestration logic
-│   ├── team.ts            # Team management
-│   ├── models.ts          # Model configurations
-│   ├── mcp.ts             # MCP tool support
-│   ├── github.ts          # GitHub integration
-│   └── analysis/          # Code analysis
-└── types/                 # TypeScript types
+│   ├── orchestrator.ts       # Core orchestration logic
+│   ├── team.ts               # Team management
+│   ├── models.ts             # Model configurations
+│   ├── mcp.ts                # MCP tool support + access policies
+│   ├── execution-store.ts    # Persistent state (Redis/in-memory)
+│   ├── schemas.ts            # Zod validation schemas
+│   ├── github.ts             # GitHub integration
+│   └── analysis/             # Code analysis
+└── types/                    # TypeScript types
 ```
 
 ## MCP (Model Context Protocol) Tools
@@ -119,11 +124,30 @@ src/
 Built-in tools available to AI models:
 
 - **web_search** - Search the web for information
-- **file_system** - Read/write project files
+- **file_system** - Read/write project files (requires approval)
 - **github** - GitHub repository operations
 - **generate_image** - Image generation (requires DALL-E)
-- **execute_code** - Sandboxed code execution
-- **database** - Database queries (requires setup)
+- **execute_code** - Sandboxed code execution (disabled by default)
+- **database** - Database queries (disabled by default)
+
+### Tool Access Policies
+
+Each tool has configurable access policies:
+- **Risk Level**: low, medium, high, critical
+- **Approval Required**: Some tools require explicit approval
+- **Rate Limiting**: Configurable calls per time window
+- **Role-based Access**: Allow/deny specific roles
+
+Example policy:
+```typescript
+{
+  toolName: 'file_system',
+  enabled: true,
+  riskLevel: 'high',
+  requiresApproval: true,
+  rateLimit: { maxCalls: 10, windowMs: 60000 }
+}
+```
 
 ## API Endpoints
 
@@ -134,8 +158,46 @@ Main orchestration endpoint for processing requests.
 {
   "message": "Create a user authentication system",
   "clarificationAnswers": {},  // optional
-  "confirmedPlan": null        // optional
+  "confirmedPlan": null,       // optional
+  "idempotencyKey": "unique-key-123",  // optional - prevents duplicate execution
+  "executionId": "exec-xxx-yyy"        // optional - for resuming
 }
+```
+
+Response includes `executionId` for tracking and resuming.
+
+### Streaming API: /api/orchestrate/stream
+
+Real-time execution updates via Server-Sent Events (SSE).
+
+**POST** - Start streaming execution
+```json
+{
+  "message": "Create a user authentication system",
+  "idempotencyKey": "unique-key-123"  // optional
+}
+```
+
+Events:
+- `phase` - Phase status updates
+- `execution_started` - Execution began with plan
+- `model_call_started/completed` - Model API calls
+- `tool_calls_started/completed` - MCP tool executions
+- `phase_completed` - Phase finished
+- `clarification_needed` - User input required
+- `plan_confirmation_required` - Complex plan needs approval
+- `complete` - Execution finished
+- `error` - Error occurred
+- `cancelled` - Execution was cancelled
+
+**DELETE** - Cancel execution
+```
+DELETE /api/orchestrate/stream?executionId=exec-xxx-yyy
+```
+
+**GET** - Check execution status
+```
+GET /api/orchestrate/stream?executionId=exec-xxx-yyy
 ```
 
 ### POST /api/team
@@ -158,6 +220,38 @@ GitHub project operations.
 }
 ```
 
+## Reliability Features
+
+### Persistent State
+- **Redis** (recommended) - Set `REDIS_URL` for production
+- **In-Memory** - Automatic fallback for development
+- Execution state survives restarts (with Redis)
+- Audit logging for all operations
+
+### Idempotency
+Prevent duplicate executions with `idempotencyKey`:
+```json
+{
+  "message": "Deploy to production",
+  "idempotencyKey": "deploy-v1.2.3-20240115"
+}
+```
+
+### Cancellation
+Cancel long-running executions:
+```bash
+curl -X DELETE "http://localhost:3000/api/orchestrate/stream?executionId=exec-xxx-yyy"
+```
+
+### Streaming Updates
+Real-time progress via SSE:
+```javascript
+const eventSource = new EventSource('/api/orchestrate/stream');
+eventSource.onmessage = (event) => {
+  console.log('Update:', JSON.parse(event.data));
+};
+```
+
 ## Deploy to Railway
 
 1. Push to GitHub
@@ -166,6 +260,7 @@ GitHub project operations.
    - `ANTHROPIC_API_KEY`
    - `OPENAI_API_KEY`
    - `APP_PASSWORD` (for login protection)
+   - `REDIS_URL` (optional - for persistent state)
    - Optional: `DEEPSEEK_API_KEY`, `QWEN_API_KEY`, `GOOGLE_AI_API_KEY`
 4. Deploy
 

@@ -3,6 +3,124 @@ import OpenAI from 'openai';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { ModelProvider, ModelConfig, ModelResponse } from '@/types';
 
+// Timeout configuration
+const DEFAULT_TIMEOUT_MS = 60000; // 60 seconds default
+const PROVIDER_TIMEOUTS: Record<ModelProvider, number> = {
+  claude: 90000,    // Claude can be slower for complex tasks
+  openai: 60000,
+  gemini: 45000,    // Gemini is usually fast
+  qwen: 120000,     // Qwen thinking models can take longer
+  grok: 60000,
+  deepseek: 120000, // DeepSeek R1 reasoning takes time
+};
+
+// Provider health tracking
+interface ProviderHealth {
+  lastSuccess: number;
+  lastError: number;
+  consecutiveFailures: number;
+  isHealthy: boolean;
+  errorMessage?: string;
+}
+
+const providerHealth: Map<ModelProvider, ProviderHealth> = new Map();
+
+// Initialize provider health
+function initProviderHealth(provider: ModelProvider): ProviderHealth {
+  return {
+    lastSuccess: 0,
+    lastError: 0,
+    consecutiveFailures: 0,
+    isHealthy: true,
+  };
+}
+
+// Update provider health on success
+function markProviderSuccess(provider: ModelProvider): void {
+  const health = providerHealth.get(provider) || initProviderHealth(provider);
+  health.lastSuccess = Date.now();
+  health.consecutiveFailures = 0;
+  health.isHealthy = true;
+  health.errorMessage = undefined;
+  providerHealth.set(provider, health);
+}
+
+// Update provider health on failure
+function markProviderFailure(provider: ModelProvider, error: string): void {
+  const health = providerHealth.get(provider) || initProviderHealth(provider);
+  health.lastError = Date.now();
+  health.consecutiveFailures++;
+  health.errorMessage = error;
+  // Mark unhealthy after 3 consecutive failures
+  if (health.consecutiveFailures >= 3) {
+    health.isHealthy = false;
+  }
+  providerHealth.set(provider, health);
+}
+
+// Get provider health status
+export function getProviderHealth(provider: ModelProvider): ProviderHealth {
+  return providerHealth.get(provider) || initProviderHealth(provider);
+}
+
+// Get all providers health
+export function getAllProvidersHealth(): Record<ModelProvider, ProviderHealth> {
+  const providers: ModelProvider[] = ['claude', 'openai', 'gemini', 'qwen', 'grok', 'deepseek'];
+  const result: Record<string, ProviderHealth> = {};
+  for (const provider of providers) {
+    result[provider] = getProviderHealth(provider);
+  }
+  return result as Record<ModelProvider, ProviderHealth>;
+}
+
+// Timeout helper with AbortController
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, provider: ModelProvider): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timeoutId = setTimeout(() => {
+      reject(new Error(`Request to ${provider} timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+
+    promise
+      .then(result => {
+        clearTimeout(timeoutId);
+        resolve(result);
+      })
+      .catch(error => {
+        clearTimeout(timeoutId);
+        reject(error);
+      });
+  });
+}
+
+// User-friendly error messages
+function formatErrorMessage(provider: ModelProvider, error: Error): string {
+  const message = error.message.toLowerCase();
+
+  if (message.includes('timeout')) {
+    return `${provider} is taking too long to respond. Try again or use a different model.`;
+  }
+  if (message.includes('401') || message.includes('unauthorized')) {
+    return `Invalid API key for ${provider}. Please check your credentials.`;
+  }
+  if (message.includes('403') || message.includes('forbidden')) {
+    return `Access denied for ${provider}. Your account may not have access to this model.`;
+  }
+  if (message.includes('429') || message.includes('rate limit')) {
+    return `${provider} rate limit reached. Please wait a moment before trying again.`;
+  }
+  if (message.includes('500') || message.includes('502') || message.includes('503')) {
+    return `${provider} is experiencing issues. Try again later or use a different provider.`;
+  }
+  if (message.includes('network') || message.includes('econnrefused') || message.includes('enotfound')) {
+    return `Cannot connect to ${provider}. Check your internet connection.`;
+  }
+  if (message.includes('context') || message.includes('token')) {
+    return `Message too long for ${provider}. Try a shorter request.`;
+  }
+
+  return `${provider} error: ${error.message}`;
+}
+
 // Model configurations - Updated January 2026
 export const MODELS: ModelConfig[] = [
   // Claude models (Anthropic)
@@ -179,123 +297,152 @@ export function getDeepSeekClient(): OpenAI {
   });
 }
 
-// Generate with specific model
+// Generate with specific model (with timeout and health tracking)
 export async function generateWithModel(
   provider: ModelProvider,
   modelId: string,
   prompt: string,
-  systemPrompt?: string
+  systemPrompt?: string,
+  options?: { timeout?: number; skipHealthCheck?: boolean }
 ): Promise<ModelResponse> {
   const startTime = Date.now();
+  const timeout = options?.timeout || PROVIDER_TIMEOUTS[provider] || DEFAULT_TIMEOUT_MS;
+
+  // Check provider health (skip if explicitly told to)
+  if (!options?.skipHealthCheck) {
+    const health = getProviderHealth(provider);
+    if (!health.isHealthy) {
+      // Provider is unhealthy, but allow retry after 5 minutes
+      const timeSinceLastError = Date.now() - health.lastError;
+      if (timeSinceLastError < 5 * 60 * 1000) {
+        return {
+          model: provider,
+          modelId,
+          content: '',
+          status: 'error',
+          error: `${provider} is temporarily unavailable (${health.consecutiveFailures} consecutive failures). Last error: ${health.errorMessage}`,
+          latency: Date.now() - startTime,
+        };
+      }
+    }
+  }
 
   try {
     let content = '';
     let thinking: string | undefined;
 
-    switch (provider) {
-      case 'claude': {
-        const client = getAnthropicClient();
-        const response = await client.messages.create({
-          model: modelId,
-          max_tokens: 4096,
-          system: systemPrompt || 'You are a helpful AI assistant.',
-          messages: [{ role: 'user', content: prompt }],
-        });
-        content = response.content[0].type === 'text' ? response.content[0].text : '';
-        break;
-      }
-
-      case 'openai': {
-        const client = getOpenAIClient();
-        const response = await client.chat.completions.create({
-          model: modelId,
-          messages: [
-            ...(systemPrompt ? [{ role: 'system' as const, content: systemPrompt }] : []),
-            { role: 'user', content: prompt },
-          ],
-          max_tokens: 4096,
-        });
-        content = response.choices[0]?.message?.content || '';
-        break;
-      }
-
-      case 'qwen': {
-        const client = getQwenClient();
-        const response = await client.chat.completions.create({
-          model: modelId,
-          messages: [
-            ...(systemPrompt ? [{ role: 'system' as const, content: systemPrompt }] : []),
-            { role: 'user', content: prompt },
-          ],
-          max_tokens: 4096,
-        });
-        content = response.choices[0]?.message?.content || '';
-
-        // Extract thinking if present
-        if (content.includes('<think>') && content.includes('</think>')) {
-          const thinkStart = content.indexOf('<think>') + 7;
-          const thinkEnd = content.indexOf('</think>');
-          thinking = content.substring(thinkStart, thinkEnd).trim();
-          content = content.substring(thinkEnd + 8).trim();
+    const generateContent = async (): Promise<void> => {
+      switch (provider) {
+        case 'claude': {
+          const client = getAnthropicClient();
+          const response = await client.messages.create({
+            model: modelId,
+            max_tokens: 4096,
+            system: systemPrompt || 'You are a helpful AI assistant.',
+            messages: [{ role: 'user', content: prompt }],
+          });
+          content = response.content[0].type === 'text' ? response.content[0].text : '';
+          break;
         }
-        break;
-      }
 
-      case 'gemini': {
-        const client = getGeminiClient();
-        const model = client.getGenerativeModel({ model: modelId });
-
-        const chat = model.startChat({
-          history: systemPrompt ? [
-            { role: 'user', parts: [{ text: `System instruction: ${systemPrompt}` }] },
-            { role: 'model', parts: [{ text: 'Understood. I will follow these instructions.' }] },
-          ] : [],
-        });
-
-        const result = await chat.sendMessage(prompt);
-        content = result.response.text();
-        break;
-      }
-
-      case 'grok': {
-        const client = getGrokClient();
-        const response = await client.chat.completions.create({
-          model: modelId,
-          messages: [
-            ...(systemPrompt ? [{ role: 'system' as const, content: systemPrompt }] : []),
-            { role: 'user', content: prompt },
-          ],
-          max_tokens: 4096,
-        });
-        content = response.choices[0]?.message?.content || '';
-        break;
-      }
-
-      case 'deepseek': {
-        const client = getDeepSeekClient();
-        const response = await client.chat.completions.create({
-          model: modelId,
-          messages: [
-            ...(systemPrompt ? [{ role: 'system' as const, content: systemPrompt }] : []),
-            { role: 'user', content: prompt },
-          ],
-          max_tokens: 4096,
-        });
-        content = response.choices[0]?.message?.content || '';
-
-        // Extract thinking if present (DeepSeek R1 uses reasoning tokens)
-        if (content.includes('<think>') && content.includes('</think>')) {
-          const thinkStart = content.indexOf('<think>') + 7;
-          const thinkEnd = content.indexOf('</think>');
-          thinking = content.substring(thinkStart, thinkEnd).trim();
-          content = content.substring(thinkEnd + 8).trim();
+        case 'openai': {
+          const client = getOpenAIClient();
+          const response = await client.chat.completions.create({
+            model: modelId,
+            messages: [
+              ...(systemPrompt ? [{ role: 'system' as const, content: systemPrompt }] : []),
+              { role: 'user', content: prompt },
+            ],
+            max_tokens: 4096,
+          });
+          content = response.choices[0]?.message?.content || '';
+          break;
         }
-        break;
-      }
 
-      default:
-        throw new Error(`Unknown provider: ${provider}`);
-    }
+        case 'qwen': {
+          const client = getQwenClient();
+          const response = await client.chat.completions.create({
+            model: modelId,
+            messages: [
+              ...(systemPrompt ? [{ role: 'system' as const, content: systemPrompt }] : []),
+              { role: 'user', content: prompt },
+            ],
+            max_tokens: 4096,
+          });
+          content = response.choices[0]?.message?.content || '';
+
+          // Extract thinking if present
+          if (content.includes('<think>') && content.includes('</think>')) {
+            const thinkStart = content.indexOf('<think>') + 7;
+            const thinkEnd = content.indexOf('</think>');
+            thinking = content.substring(thinkStart, thinkEnd).trim();
+            content = content.substring(thinkEnd + 8).trim();
+          }
+          break;
+        }
+
+        case 'gemini': {
+          const client = getGeminiClient();
+          const model = client.getGenerativeModel({ model: modelId });
+
+          const chat = model.startChat({
+            history: systemPrompt ? [
+              { role: 'user', parts: [{ text: `System instruction: ${systemPrompt}` }] },
+              { role: 'model', parts: [{ text: 'Understood. I will follow these instructions.' }] },
+            ] : [],
+          });
+
+          const result = await chat.sendMessage(prompt);
+          content = result.response.text();
+          break;
+        }
+
+        case 'grok': {
+          const client = getGrokClient();
+          const response = await client.chat.completions.create({
+            model: modelId,
+            messages: [
+              ...(systemPrompt ? [{ role: 'system' as const, content: systemPrompt }] : []),
+              { role: 'user', content: prompt },
+            ],
+            max_tokens: 4096,
+          });
+          content = response.choices[0]?.message?.content || '';
+          break;
+        }
+
+        case 'deepseek': {
+          const client = getDeepSeekClient();
+          const response = await client.chat.completions.create({
+            model: modelId,
+            messages: [
+              ...(systemPrompt ? [{ role: 'system' as const, content: systemPrompt }] : []),
+              { role: 'user', content: prompt },
+            ],
+            max_tokens: 4096,
+          });
+          content = response.choices[0]?.message?.content || '';
+
+          // Extract thinking if present (DeepSeek R1 uses reasoning tokens)
+          if (content.includes('<think>') && content.includes('</think>')) {
+            const thinkStart = content.indexOf('<think>') + 7;
+            const thinkEnd = content.indexOf('</think>');
+            thinking = content.substring(thinkStart, thinkEnd).trim();
+            content = content.substring(thinkEnd + 8).trim();
+          }
+          break;
+        }
+
+        default:
+          throw new Error(`Unknown provider: ${provider}`);
+      }
+    };
+
+    // Execute with timeout
+    await withTimeout(generateContent(), timeout, provider);
+
+    // Mark provider as healthy
+    markProviderSuccess(provider);
 
     return {
       model: provider,
@@ -306,15 +453,70 @@ export async function generateWithModel(
       latency: Date.now() - startTime,
     };
   } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+
+    // Mark provider failure
+    markProviderFailure(provider, err.message);
+
     return {
       model: provider,
       modelId,
       content: '',
       status: 'error',
-      error: error instanceof Error ? error.message : 'Unknown error',
+      error: formatErrorMessage(provider, err),
       latency: Date.now() - startTime,
     };
   }
+}
+
+// Generate with fallback to other providers
+export async function generateWithFallback(
+  preferredProvider: ModelProvider,
+  preferredModelId: string,
+  prompt: string,
+  systemPrompt?: string,
+  fallbackProviders?: ModelProvider[]
+): Promise<ModelResponse & { usedFallback?: boolean; originalProvider?: ModelProvider }> {
+  // Try preferred provider first
+  const result = await generateWithModel(preferredProvider, preferredModelId, prompt, systemPrompt);
+
+  if (result.status === 'completed') {
+    return result;
+  }
+
+  // If failed, try fallbacks
+  const availableModels = getAvailableModels().filter(m => m.available);
+  const fallbacks = fallbackProviders || ['claude', 'openai', 'deepseek', 'qwen'] as ModelProvider[];
+
+  for (const fallbackProvider of fallbacks) {
+    if (fallbackProvider === preferredProvider) continue;
+
+    const fallbackModel = availableModels.find(m => m.provider === fallbackProvider);
+    if (!fallbackModel) continue;
+
+    const health = getProviderHealth(fallbackProvider);
+    if (!health.isHealthy) continue;
+
+    console.log(`Falling back from ${preferredProvider} to ${fallbackProvider}`);
+
+    const fallbackResult = await generateWithModel(
+      fallbackProvider,
+      fallbackModel.apiModel,
+      prompt,
+      systemPrompt
+    );
+
+    if (fallbackResult.status === 'completed') {
+      return {
+        ...fallbackResult,
+        usedFallback: true,
+        originalProvider: preferredProvider,
+      };
+    }
+  }
+
+  // All fallbacks failed, return original error
+  return result;
 }
 
 // Get best model for task type

@@ -1,6 +1,10 @@
 import { ModelProvider } from '@/types';
 import { generateWithModel, MODELS } from './models';
 
+// Memory management constants
+const MAX_COMPLETED_TASKS = 100; // Keep only last 100 completed tasks
+const MAX_IDLE_MEMBERS = 20; // Keep max 20 idle members
+
 // Team member roles and specializations
 export type TeamRole =
   | 'lead_architect'
@@ -459,14 +463,74 @@ Provide a thorough, professional response appropriate for your role.`;
     this.tasks.set(newTask.id, newTask);
     return newTask;
   }
+
+  // Memory cleanup - remove old completed tasks and excess idle members
+  cleanup(): void {
+    // Get all completed tasks sorted by completion time
+    const completedTasks = Array.from(this.tasks.values())
+      .filter(t => t.status === 'complete' && t.completedAt)
+      .sort((a, b) => (b.completedAt?.getTime() || 0) - (a.completedAt?.getTime() || 0));
+
+    // Remove old completed tasks beyond limit
+    if (completedTasks.length > MAX_COMPLETED_TASKS) {
+      const tasksToRemove = completedTasks.slice(MAX_COMPLETED_TASKS);
+      for (const task of tasksToRemove) {
+        this.tasks.delete(task.id);
+      }
+      console.log(`[TeamManager] Cleaned up ${tasksToRemove.length} old completed tasks`);
+    }
+
+    // Get idle members (excluding lead)
+    const idleMembers = Array.from(this.members.values())
+      .filter(m => m.status === 'idle' && m.id !== this.lead.id);
+
+    // Remove excess idle members
+    if (idleMembers.length > MAX_IDLE_MEMBERS) {
+      const membersToRemove = idleMembers.slice(MAX_IDLE_MEMBERS);
+      for (const member of membersToRemove) {
+        this.members.delete(member.id);
+        this.usedNames.delete(member.name);
+      }
+      console.log(`[TeamManager] Cleaned up ${membersToRemove.length} excess idle members`);
+    }
+  }
+
+  // Get memory stats for monitoring
+  getMemoryStats(): { tasks: number; members: number; completedTasks: number } {
+    const completedTasks = Array.from(this.tasks.values()).filter(t => t.status === 'complete').length;
+    return {
+      tasks: this.tasks.size,
+      members: this.members.size,
+      completedTasks,
+    };
+  }
 }
+
+const CLEANUP_INTERVAL_MS = 5 * 60 * 1000; // Cleanup every 5 minutes
 
 // Singleton instance
 let teamManagerInstance: TeamManager | null = null;
+let cleanupIntervalId: NodeJS.Timeout | null = null;
 
 export function getTeamManager(): TeamManager {
   if (!teamManagerInstance) {
     teamManagerInstance = new TeamManager();
+
+    // Start periodic cleanup
+    if (!cleanupIntervalId) {
+      cleanupIntervalId = setInterval(() => {
+        teamManagerInstance?.cleanup();
+      }, CLEANUP_INTERVAL_MS);
+    }
   }
   return teamManagerInstance;
+}
+
+// For testing or reset purposes
+export function resetTeamManager(): void {
+  if (cleanupIntervalId) {
+    clearInterval(cleanupIntervalId);
+    cleanupIntervalId = null;
+  }
+  teamManagerInstance = null;
 }
