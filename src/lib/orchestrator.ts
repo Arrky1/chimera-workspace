@@ -386,3 +386,218 @@ Respond with either:
 
   return { code, iterations, approved };
 }
+
+// Execute debate mode (pro vs con with judge)
+export async function executeDebate(
+  question: string,
+  proProvider: ModelProvider = 'claude',
+  conProvider: ModelProvider = 'openai',
+  judgeProvider: ModelProvider = 'qwen',
+  rounds: number = 2
+): Promise<{
+  arguments: { model: ModelProvider; position: 'pro' | 'con'; argument: string; round: number }[];
+  verdict: string;
+  reasoning: string;
+}> {
+  const availableModels = getAvailableModels();
+  const proModel = availableModels.find(m => m.provider === proProvider && m.available);
+  const conModel = availableModels.find(m => m.provider === conProvider && m.available);
+  const judgeModel = availableModels.find(m => m.provider === judgeProvider && m.available);
+
+  if (!proModel || !conModel) {
+    throw new Error('Need at least 2 models for debate');
+  }
+
+  const debateArgs: { model: ModelProvider; position: 'pro' | 'con'; argument: string; round: number }[] = [];
+  let previousArguments = '';
+
+  // Conduct debate rounds
+  for (let round = 1; round <= rounds; round++) {
+    // PRO argument
+    const proPrompt = round === 1
+      ? `You are arguing IN FAVOR of the following position. Make your strongest case.
+
+Question: ${question}
+
+Provide 2-3 compelling arguments supporting this position.`
+      : `You are arguing IN FAVOR. Counter the opposing arguments and strengthen your position.
+
+Question: ${question}
+
+Previous arguments:
+${previousArguments}
+
+Provide your rebuttal and additional supporting arguments.`;
+
+    const proResponse = await generateWithModel(
+      proProvider,
+      proModel.apiModel,
+      proPrompt,
+      'You are a skilled debater arguing FOR the position. Be persuasive but honest.'
+    );
+
+    debateArgs.push({
+      model: proProvider,
+      position: 'pro',
+      argument: proResponse.content,
+      round,
+    });
+
+    previousArguments += `\n\n[PRO Round ${round}]: ${proResponse.content}`;
+
+    // CON argument
+    const conPrompt = round === 1
+      ? `You are arguing AGAINST the following position. Make your strongest case.
+
+Question: ${question}
+
+Previous PRO argument:
+${proResponse.content}
+
+Provide 2-3 compelling arguments against this position.`
+      : `You are arguing AGAINST. Counter the supporting arguments.
+
+Question: ${question}
+
+Previous arguments:
+${previousArguments}
+
+Provide your rebuttal and additional opposing arguments.`;
+
+    const conResponse = await generateWithModel(
+      conProvider,
+      conModel.apiModel,
+      conPrompt,
+      'You are a skilled debater arguing AGAINST the position. Be persuasive but honest.'
+    );
+
+    debateArgs.push({
+      model: conProvider,
+      position: 'con',
+      argument: conResponse.content,
+      round,
+    });
+
+    previousArguments += `\n\n[CON Round ${round}]: ${conResponse.content}`;
+  }
+
+  // Judge's verdict
+  let verdict = 'PRO'; // default
+  let reasoning = 'Based on the arguments presented.';
+
+  if (judgeModel) {
+    const judgeResponse = await generateWithModel(
+      judgeProvider,
+      judgeModel.apiModel,
+      `You are an impartial judge evaluating a debate.
+
+Question being debated: ${question}
+
+Full debate transcript:
+${previousArguments}
+
+Evaluate both sides fairly and provide:
+1. Your verdict: PRO or CON (which side made the stronger case)
+2. Brief reasoning (2-3 sentences)
+
+Format your response as:
+VERDICT: [PRO/CON]
+REASONING: [your explanation]`,
+      'You are a fair and impartial judge. Evaluate arguments on their merit, logic, and evidence.'
+    );
+
+    const verdictMatch = judgeResponse.content.match(/VERDICT:\s*(PRO|CON)/i);
+    const reasoningMatch = judgeResponse.content.match(/REASONING:\s*(.+)/is);
+
+    verdict = verdictMatch ? verdictMatch[1].toUpperCase() : 'PRO';
+    reasoning = reasoningMatch ? reasoningMatch[1].trim() : judgeResponse.content;
+  } else {
+    // Without judge, count argument strength (simplified)
+    reasoning = 'No judge model available. Defaulting to PRO based on first-mover advantage.';
+  }
+
+  return { arguments: debateArgs, verdict, reasoning };
+}
+
+// Advanced council with weighted voting and synthesis
+export async function executeAdvancedCouncil(
+  question: string,
+  context: string,
+  models: ModelProvider[]
+): Promise<{
+  votes: { model: ModelProvider; vote: string; reasoning: string; confidence: number }[];
+  consensus: number;
+  synthesizedAnswer: string;
+}> {
+  const availableModels = getAvailableModels();
+  const votes: { model: ModelProvider; vote: string; reasoning: string; confidence: number }[] = [];
+
+  // Get votes from each model
+  const votePromises = models.map(async (provider) => {
+    const model = availableModels.find(m => m.provider === provider && m.available);
+    if (!model) return null;
+
+    const response = await generateWithModel(
+      provider,
+      model.apiModel,
+      `You are participating in an architecture council. Analyze the question and provide your expert recommendation.
+
+Context: ${context}
+
+Question: ${question}
+
+Respond in this format:
+RECOMMENDATION: [your specific recommendation]
+REASONING: [2-3 sentences explaining why]
+CONFIDENCE: [HIGH/MEDIUM/LOW]`,
+      'You are a senior architect. Provide thoughtful, well-reasoned recommendations.'
+    );
+
+    const recMatch = response.content.match(/RECOMMENDATION:\s*(.+?)(?=REASONING:|$)/is);
+    const reasonMatch = response.content.match(/REASONING:\s*(.+?)(?=CONFIDENCE:|$)/is);
+    const confMatch = response.content.match(/CONFIDENCE:\s*(HIGH|MEDIUM|LOW)/i);
+
+    const confidenceMap: Record<string, number> = { HIGH: 0.9, MEDIUM: 0.7, LOW: 0.5 };
+
+    return {
+      model: provider,
+      vote: recMatch ? recMatch[1].trim() : response.content,
+      reasoning: reasonMatch ? reasonMatch[1].trim() : '',
+      confidence: confMatch ? confidenceMap[confMatch[1].toUpperCase()] || 0.7 : 0.7,
+    };
+  });
+
+  const results = await Promise.all(votePromises);
+  for (const result of results) {
+    if (result) votes.push(result);
+  }
+
+  // Calculate consensus (how similar the votes are)
+  const uniqueVotes = new Set(votes.map(v => v.vote.substring(0, 50).toLowerCase()));
+  const consensus = 1 - (uniqueVotes.size - 1) / votes.length;
+
+  // Synthesize final answer using the lead model (Claude)
+  const leadModel = availableModels.find(m => m.provider === 'claude' && m.available);
+  let synthesizedAnswer = votes[0]?.vote || 'No consensus reached';
+
+  if (leadModel && votes.length > 1) {
+    const synthesisPrompt = `As Lead Architect, synthesize these council votes into a final recommendation:
+
+${votes.map(v => `**${v.model}** (confidence: ${v.confidence}):
+${v.vote}
+Reasoning: ${v.reasoning}`).join('\n\n---\n\n')}
+
+Provide a unified recommendation that incorporates the best insights from each expert.`;
+
+    const synthesisResponse = await generateWithModel(
+      'claude',
+      leadModel.apiModel,
+      synthesisPrompt,
+      'You are Alex, Lead Architect. Synthesize team input into a clear, actionable recommendation.'
+    );
+
+    synthesizedAnswer = synthesisResponse.content;
+  }
+
+  return { votes, consensus, synthesizedAnswer };
+}

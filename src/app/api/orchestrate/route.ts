@@ -7,7 +7,11 @@ import {
   createExecutionPlan,
   executeCouncil,
   executeDeliberation,
+  executeDebate,
+  executeAdvancedCouncil,
 } from '@/lib/orchestrator';
+import { getTeamManager } from '@/lib/team';
+import { getToolDescriptions } from '@/lib/mcp';
 import { generateWithModel, getAvailableModels, getBestModelForTask } from '@/lib/models';
 
 export async function POST(request: NextRequest) {
@@ -112,11 +116,21 @@ async function executeSimpleTask(
     });
   }
 
+  // Include available tools in system prompt
+  const toolsDescription = getToolDescriptions();
+  const systemPrompt = `You are a helpful AI assistant that helps with coding tasks. Be concise and provide working code.
+
+Available tools you can use:
+${toolsDescription}
+
+To use a tool, format your response as:
+<tool_use name="tool_name">{"param": "value"}</tool_use>`;
+
   const response = await generateWithModel(
     bestModel.provider,
     bestModel.apiModel,
     message,
-    'You are a helpful AI assistant that helps with coding tasks. Be concise and provide working code.'
+    systemPrompt
   );
 
   // Update plan status
@@ -158,6 +172,34 @@ async function handlePlanExecution(plan: Awaited<ReturnType<typeof createExecuti
             phase.models[0],
             phase.models[1] || phase.models[0]
           );
+          break;
+
+        case 'debate':
+          phaseResult = await executeDebate(
+            'Debate the best approach for this task',
+            phase.models[0] || 'claude',
+            phase.models[1] || 'openai',
+            phase.models[2] || 'qwen',
+            2 // rounds
+          );
+          break;
+
+        case 'swarm':
+          // Use team manager for swarm mode
+          const teamManager = getTeamManager();
+          const plan = await teamManager.analyzeAndPlanTask('Execute task with team');
+          const team = teamManager.assembleTeam(plan.requiredRoles);
+          const tasks = plan.taskBreakdown.map(t => teamManager.createTask(t));
+
+          const swarmResults: { taskId: string; member: string; result: string }[] = [];
+          for (const task of tasks) {
+            const member = teamManager.assignTask(task, team);
+            if (member) {
+              const result = await teamManager.executeTask(task, member);
+              swarmResults.push({ taskId: task.id, member: member.name, result });
+            }
+          }
+          phaseResult = { tasks: swarmResults, teamSize: team.length };
           break;
 
         case 'single':
