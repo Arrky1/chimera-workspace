@@ -1,12 +1,11 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { Header, ChatInput, MessageList } from '@/components';
-import { ProjectRevision } from '@/components/ProjectRevision';
+import { Header, ChatInput, MessageList, ProjectsDashboard } from '@/components';
 import { Message, ModelConfig, ClarificationRequest, ExecutionPlan } from '@/types';
-import { MessageSquare, FolderSearch, Settings } from 'lucide-react';
+import { MessageSquare, FolderGit2, Settings } from 'lucide-react';
 
-type TabType = 'chat' | 'revision' | 'settings';
+type TabType = 'chat' | 'projects' | 'settings';
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState<TabType>('chat');
@@ -56,7 +55,7 @@ export default function Home() {
     // Check if user wants to analyze a project
     const revisionMatch = input.match(/(?:ревизи[яю]|проверь|анализ|review|analyze)\s+(?:проект[а]?\s+)?(.+)/i);
     if (revisionMatch) {
-      setActiveTab('revision');
+      setActiveTab('projects');
       return;
     }
 
@@ -218,7 +217,7 @@ export default function Home() {
 
   const tabs = [
     { id: 'chat' as TabType, label: 'Chat', icon: MessageSquare },
-    { id: 'revision' as TabType, label: 'Project Revision', icon: FolderSearch },
+    { id: 'projects' as TabType, label: 'Projects', icon: FolderGit2 },
     { id: 'settings' as TabType, label: 'Settings', icon: Settings },
   ];
 
@@ -264,7 +263,7 @@ export default function Home() {
           </>
         )}
 
-        {activeTab === 'revision' && <ProjectRevision />}
+        {activeTab === 'projects' && <ProjectsDashboard />}
 
         {activeTab === 'settings' && (
           <div className="flex-1 p-6 overflow-y-auto">
