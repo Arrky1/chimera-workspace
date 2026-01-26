@@ -3,7 +3,7 @@ export * from './analysis';
 export * from './project';
 
 // Model types
-export type ModelProvider = 'claude' | 'openai' | 'gemini' | 'qwen';
+export type ModelProvider = 'claude' | 'openai' | 'gemini' | 'qwen' | 'grok' | 'deepseek';
 
 export interface ModelConfig {
   id: string;

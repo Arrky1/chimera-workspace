@@ -3,23 +3,23 @@ import OpenAI from 'openai';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { ModelProvider, ModelConfig, ModelResponse } from '@/types';
 
-// Model configurations
+// Model configurations - Updated January 2026
 export const MODELS: ModelConfig[] = [
-  // Claude models
+  // Claude models (Anthropic)
   {
-    id: 'claude-opus',
+    id: 'claude-opus-4.5',
     provider: 'claude',
     name: 'Claude Opus 4.5',
     apiModel: 'claude-opus-4-5-20251101',
-    strengths: ['code', 'architecture', 'review', 'complex_reasoning'],
+    strengths: ['code', 'architecture', 'review', 'complex_reasoning', 'writing'],
     available: true,
   },
   {
-    id: 'claude-sonnet',
+    id: 'claude-sonnet-4.5',
     provider: 'claude',
-    name: 'Claude Sonnet 4',
-    apiModel: 'claude-sonnet-4-20250514',
-    strengths: ['fast_code', 'general', 'code'],
+    name: 'Claude Sonnet 4.5',
+    apiModel: 'claude-sonnet-4-5-20251101',
+    strengths: ['fast_code', 'general', 'code', 'agentic'],
     available: true,
   },
   // OpenAI models
@@ -28,43 +28,59 @@ export const MODELS: ModelConfig[] = [
     provider: 'openai',
     name: 'GPT-5.2',
     apiModel: 'gpt-5.2',
-    strengths: ['code', 'architecture', 'complex_reasoning', 'math', 'multimodal'],
+    strengths: ['complex_reasoning', 'math', 'code', 'architecture'],
     available: true,
   },
   {
-    id: 'gpt-4o',
+    id: 'gpt-5.2-pro',
     provider: 'openai',
-    name: 'GPT-4o',
-    apiModel: 'gpt-4o',
-    strengths: ['math', 'stem', 'reasoning', 'multimodal'],
+    name: 'GPT-5.2 Pro',
+    apiModel: 'gpt-5.2-pro',
+    strengths: ['complex_reasoning', 'math', 'code', 'planning', 'architecture'],
     available: true,
   },
   {
-    id: 'o1',
+    id: 'o3',
     provider: 'openai',
-    name: 'o1 (Reasoning)',
-    apiModel: 'o1',
+    name: 'o3 (Reasoning)',
+    apiModel: 'o3',
     strengths: ['complex_reasoning', 'math', 'code', 'planning'],
+    available: true,
+  },
+  {
+    id: 'o4-mini',
+    provider: 'openai',
+    name: 'o4-mini (Fast Reasoning)',
+    apiModel: 'o4-mini',
+    strengths: ['fast', 'reasoning', 'code'],
     available: true,
   },
   // Google Gemini models
   {
-    id: 'gemini-2-flash',
+    id: 'gemini-3-pro',
     provider: 'gemini',
-    name: 'Gemini 2.0 Flash',
-    apiModel: 'gemini-2.0-flash',
-    strengths: ['fast', 'multimodal', 'long_context'],
+    name: 'Gemini 3 Pro',
+    apiModel: 'gemini-3-pro',
+    strengths: ['fast', 'multimodal', 'long_context', 'code', 'reasoning'],
     available: false,
   },
   {
-    id: 'gemini-2-pro',
+    id: 'gemini-3-flash',
     provider: 'gemini',
-    name: 'Gemini 2.0 Pro',
-    apiModel: 'gemini-2.0-pro-exp',
-    strengths: ['code', 'reasoning', 'multimodal', 'vision'],
+    name: 'Gemini 3 Flash',
+    apiModel: 'gemini-3-flash',
+    strengths: ['fast', 'multimodal', 'value'],
     available: false,
   },
-  // Qwen models
+  {
+    id: 'gemini-2.5-deep-think',
+    provider: 'gemini',
+    name: 'Gemini 2.5 Deep Think',
+    apiModel: 'gemini-2.5-deep-think',
+    strengths: ['complex_reasoning', 'math', 'planning'],
+    available: false,
+  },
+  // Qwen models (Alibaba)
   {
     id: 'qwen-thinking',
     provider: 'qwen',
@@ -79,6 +95,32 @@ export const MODELS: ModelConfig[] = [
     name: 'Qwen2.5-Coder-32B',
     apiModel: 'qwen2.5-coder-32b-instruct',
     strengths: ['code', 'fast_code', 'debugging'],
+    available: false,
+  },
+  // xAI Grok models
+  {
+    id: 'grok-4.1',
+    provider: 'grok',
+    name: 'Grok 4.1',
+    apiModel: 'grok-4-1',
+    strengths: ['reasoning', 'code', 'agentic', 'tool_use'],
+    available: false,
+  },
+  {
+    id: 'grok-4.1-fast',
+    provider: 'grok',
+    name: 'Grok 4.1 Fast',
+    apiModel: 'grok-4-1-fast',
+    strengths: ['fast', 'agentic', 'tool_use'],
+    available: false,
+  },
+  // DeepSeek models
+  {
+    id: 'deepseek-r1',
+    provider: 'deepseek',
+    name: 'DeepSeek R1',
+    apiModel: 'deepseek-r1',
+    strengths: ['reasoning', 'math', 'code', 'open_source'],
     available: false,
   },
 ];
@@ -118,6 +160,22 @@ export function getQwenClient(): OpenAI {
   return new OpenAI({
     apiKey: process.env.QWEN_API_KEY,
     baseURL: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1',
+  });
+}
+
+// Grok (xAI) uses OpenAI-compatible API
+export function getGrokClient(): OpenAI {
+  return new OpenAI({
+    apiKey: process.env.XAI_API_KEY,
+    baseURL: 'https://api.x.ai/v1',
+  });
+}
+
+// DeepSeek uses OpenAI-compatible API
+export function getDeepSeekClient(): OpenAI {
+  return new OpenAI({
+    apiKey: process.env.DEEPSEEK_API_KEY,
+    baseURL: 'https://api.deepseek.com/v1',
   });
 }
 
@@ -199,6 +257,42 @@ export async function generateWithModel(
         break;
       }
 
+      case 'grok': {
+        const client = getGrokClient();
+        const response = await client.chat.completions.create({
+          model: modelId,
+          messages: [
+            ...(systemPrompt ? [{ role: 'system' as const, content: systemPrompt }] : []),
+            { role: 'user', content: prompt },
+          ],
+          max_tokens: 4096,
+        });
+        content = response.choices[0]?.message?.content || '';
+        break;
+      }
+
+      case 'deepseek': {
+        const client = getDeepSeekClient();
+        const response = await client.chat.completions.create({
+          model: modelId,
+          messages: [
+            ...(systemPrompt ? [{ role: 'system' as const, content: systemPrompt }] : []),
+            { role: 'user', content: prompt },
+          ],
+          max_tokens: 4096,
+        });
+        content = response.choices[0]?.message?.content || '';
+
+        // Extract thinking if present (DeepSeek R1 uses reasoning tokens)
+        if (content.includes('<think>') && content.includes('</think>')) {
+          const thinkStart = content.indexOf('<think>') + 7;
+          const thinkEnd = content.indexOf('</think>');
+          thinking = content.substring(thinkStart, thinkEnd).trim();
+          content = content.substring(thinkEnd + 8).trim();
+        }
+        break;
+      }
+
       default:
         throw new Error(`Unknown provider: ${provider}`);
     }
@@ -272,6 +366,10 @@ function isModelAvailable(provider: ModelProvider): boolean {
       return !!process.env.GOOGLE_AI_API_KEY;
     case 'qwen':
       return !!process.env.QWEN_API_KEY;
+    case 'grok':
+      return !!process.env.XAI_API_KEY;
+    case 'deepseek':
+      return !!process.env.DEEPSEEK_API_KEY;
     default:
       return false;
   }
