@@ -206,7 +206,7 @@ async function cloneAndAnalyze(project: Project) {
         totalFiles: projectInfo.totalFiles,
         totalLines: projectInfo.totalLines,
         framework: projectInfo.framework,
-        language: projectInfo.language,
+        language: projectInfo.language || 'Unknown',
       },
     };
 
