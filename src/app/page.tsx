@@ -2,9 +2,14 @@
 
 import { useState, useEffect } from 'react';
 import { Header, ChatInput, MessageList } from '@/components';
+import { ProjectRevision } from '@/components/ProjectRevision';
 import { Message, ModelConfig, ClarificationRequest, ExecutionPlan } from '@/types';
+import { MessageSquare, FolderSearch, Settings } from 'lucide-react';
+
+type TabType = 'chat' | 'revision' | 'settings';
 
 export default function Home() {
+  const [activeTab, setActiveTab] = useState<TabType>('chat');
   const [messages, setMessages] = useState<Message[]>([]);
   const [models, setModels] = useState<ModelConfig[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -48,6 +53,13 @@ export default function Home() {
   const handleSubmit = async (input: string, attachments?: File[]) => {
     if (!input.trim()) return;
 
+    // Check if user wants to analyze a project
+    const revisionMatch = input.match(/(?:ревизи[яю]|проверь|анализ|review|analyze)\s+(?:проект[а]?\s+)?(.+)/i);
+    if (revisionMatch) {
+      setActiveTab('revision');
+      return;
+    }
+
     // Add user message
     addMessage({
       role: 'user',
@@ -72,7 +84,6 @@ export default function Home() {
       const data = await response.json();
 
       if (data.type === 'clarification') {
-        // Show clarification questions
         const assistantMessage = addMessage({
           role: 'assistant',
           content: data.message,
@@ -85,19 +96,16 @@ export default function Home() {
           originalMessage: input,
         });
       } else if (data.type === 'plan') {
-        // Show execution plan
         const assistantMessage = addMessage({
           role: 'assistant',
           content: data.message,
           executionPlan: data.plan,
         });
 
-        // Auto-execute for now (could add confirmation UI)
         if (data.requiresConfirmation) {
           await executePlan(data.plan, assistantMessage.id);
         }
       } else if (data.type === 'result') {
-        // Show result
         addMessage({
           role: 'assistant',
           content: data.message,
@@ -123,11 +131,9 @@ export default function Home() {
   const handleClarificationAnswer = async (answers: Record<string, string>) => {
     if (!pendingClarification) return;
 
-    // Remove clarification from message
     updateMessage(pendingClarification.messageId, { clarification: undefined });
     setPendingClarification(null);
 
-    // Add user's clarification response
     const answerText = Object.entries(answers)
       .map(([_, value]) => value)
       .join(', ');
@@ -187,10 +193,8 @@ export default function Home() {
       const data = await response.json();
 
       if (data.type === 'execution_complete') {
-        // Update plan in message
         updateMessage(messageId, { executionPlan: data.plan });
 
-        // Add result message
         const resultContent = data.results
           .map((r: { phase: string; result: { output?: string; code?: string; synthesis?: string } }) => {
             const output = r.result?.output || r.result?.code || r.result?.synthesis || 'Completed';
@@ -212,23 +216,129 @@ export default function Home() {
     }
   };
 
+  const tabs = [
+    { id: 'chat' as TabType, label: 'Chat', icon: MessageSquare },
+    { id: 'revision' as TabType, label: 'Project Revision', icon: FolderSearch },
+    { id: 'settings' as TabType, label: 'Settings', icon: Settings },
+  ];
+
   return (
     <div className="flex h-screen flex-col">
       <Header models={models} />
 
-      <main className="flex flex-1 flex-col overflow-hidden">
-        <MessageList
-          messages={messages}
-          onClarificationAnswer={
-            pendingClarification ? handleClarificationAnswer : undefined
-          }
-        />
+      {/* Tabs */}
+      <div className="border-b border-orchestrator-border bg-orchestrator-card">
+        <div className="flex px-4">
+          {tabs.map((tab) => (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              className={`flex items-center gap-2 px-4 py-3 text-sm font-medium border-b-2 transition-all ${
+                activeTab === tab.id
+                  ? 'border-orchestrator-accent text-white'
+                  : 'border-transparent text-gray-400 hover:text-white hover:border-gray-600'
+              }`}
+            >
+              <tab.icon size={16} />
+              {tab.label}
+            </button>
+          ))}
+        </div>
+      </div>
 
-        <ChatInput
-          onSubmit={handleSubmit}
-          isProcessing={isProcessing}
-          placeholder="Опишите задачу... (Shift+Enter для новой строки)"
-        />
+      {/* Tab Content */}
+      <main className="flex flex-1 flex-col overflow-hidden">
+        {activeTab === 'chat' && (
+          <>
+            <MessageList
+              messages={messages}
+              onClarificationAnswer={
+                pendingClarification ? handleClarificationAnswer : undefined
+              }
+            />
+            <ChatInput
+              onSubmit={handleSubmit}
+              isProcessing={isProcessing}
+              placeholder="Опишите задачу... (Shift+Enter для новой строки)"
+            />
+          </>
+        )}
+
+        {activeTab === 'revision' && <ProjectRevision />}
+
+        {activeTab === 'settings' && (
+          <div className="flex-1 p-6 overflow-y-auto">
+            <h2 className="text-xl font-semibold text-white mb-6">Settings</h2>
+
+            {/* API Keys */}
+            <div className="space-y-6">
+              <div className="rounded-xl border border-orchestrator-border bg-orchestrator-card p-6">
+                <h3 className="text-lg font-medium text-white mb-4">API Keys</h3>
+                <div className="space-y-4">
+                  {models.map((model) => (
+                    <div key={model.id} className="flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <div
+                          className={`h-3 w-3 rounded-full ${
+                            model.available ? 'bg-green-500' : 'bg-red-500'
+                          }`}
+                        />
+                        <span className="text-white">{model.name}</span>
+                        <span className="text-xs text-gray-500">({model.provider})</span>
+                      </div>
+                      <span className={model.available ? 'text-green-400' : 'text-red-400'}>
+                        {model.available ? 'Connected' : 'Not configured'}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+                <p className="mt-4 text-sm text-gray-400">
+                  Configure API keys in your environment variables (.env.local)
+                </p>
+              </div>
+
+              {/* Model Preferences */}
+              <div className="rounded-xl border border-orchestrator-border bg-orchestrator-card p-6">
+                <h3 className="text-lg font-medium text-white mb-4">Model Preferences</h3>
+                <div className="space-y-4">
+                  <div>
+                    <label className="block text-sm text-gray-400 mb-2">Default for Code Tasks</label>
+                    <select className="w-full rounded-lg border border-orchestrator-border bg-orchestrator-bg px-4 py-2 text-white">
+                      <option value="claude">Claude Opus 4.5</option>
+                      <option value="gpt4">GPT-4</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm text-gray-400 mb-2">Default for Review</label>
+                    <select className="w-full rounded-lg border border-orchestrator-border bg-orchestrator-bg px-4 py-2 text-white">
+                      <option value="openai">GPT-4 Turbo</option>
+                      <option value="claude">Claude Sonnet</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              {/* Execution Settings */}
+              <div className="rounded-xl border border-orchestrator-border bg-orchestrator-card p-6">
+                <h3 className="text-lg font-medium text-white mb-4">Execution</h3>
+                <div className="space-y-4">
+                  <label className="flex items-center gap-3">
+                    <input type="checkbox" className="accent-orchestrator-accent" defaultChecked />
+                    <span className="text-white">Auto-execute simple tasks</span>
+                  </label>
+                  <label className="flex items-center gap-3">
+                    <input type="checkbox" className="accent-orchestrator-accent" defaultChecked />
+                    <span className="text-white">Show clarification questions</span>
+                  </label>
+                  <label className="flex items-center gap-3">
+                    <input type="checkbox" className="accent-orchestrator-accent" />
+                    <span className="text-white">Use Council mode for architecture decisions</span>
+                  </label>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
       </main>
     </div>
   );

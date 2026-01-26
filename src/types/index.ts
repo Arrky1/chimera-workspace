@@ -1,3 +1,6 @@
+// Re-export analysis types
+export * from './analysis';
+
 // Model types
 export type ModelProvider = 'claude' | 'openai' | 'gemini' | 'qwen';
 
