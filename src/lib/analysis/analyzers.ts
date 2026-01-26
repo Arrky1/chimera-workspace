@@ -252,8 +252,8 @@ export const codeQualityAnalyzer: Analyzer = {
       }
 
       // Check for duplicate code blocks (simple heuristic)
-      const codeBlocks = content.match(/\{[\s\S]{50,200}\}/g) || [];
-      const duplicates = codeBlocks.filter((block, i) =>
+      const codeBlocks: string[] = content.match(/\{[\s\S]{50,200}\}/g) || [];
+      const duplicates = codeBlocks.filter((block: string, i: number) =>
         codeBlocks.indexOf(block) !== i
       );
       if (duplicates.length > 0) {

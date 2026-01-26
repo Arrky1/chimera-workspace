@@ -37,7 +37,7 @@ export interface Attachment {
 export interface ClarificationQuestion {
   id: string;
   question: string;
-  type: 'reference' | 'scope' | 'technical' | 'priority';
+  type: 'reference' | 'scope' | 'technical' | 'priority' | 'context';
   options: ClarificationOption[];
   allowCustom: boolean;
   default?: string;

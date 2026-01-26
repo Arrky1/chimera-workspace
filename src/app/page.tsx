@@ -1,8 +1,9 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { Header, ChatInput, MessageList, ProjectsDashboard } from '@/components';
-import { Message, ModelConfig, ClarificationRequest, ExecutionPlan } from '@/types';
+import { Header, ChatInput, MessageList, ProjectsDashboard, ActivityFeed, useActivityFeed } from '@/components';
+import type { ModelActivity } from '@/components';
+import { Message, ModelConfig, ClarificationRequest, ExecutionPlan, ModelProvider } from '@/types';
 import { MessageSquare, FolderGit2, Settings } from 'lucide-react';
 
 type TabType = 'chat' | 'projects' | 'settings';
@@ -17,6 +18,8 @@ export default function Home() {
     request: ClarificationRequest;
     originalMessage: string;
   } | null>(null);
+  const [activityExpanded, setActivityExpanded] = useState(true);
+  const { activities, addActivity, updateActivity, clearActivities } = useActivityFeed();
 
   // Fetch available models on mount
   useEffect(() => {
@@ -72,6 +75,24 @@ export default function Home() {
     });
 
     setIsProcessing(true);
+    clearActivities();
+
+    // Simulate AI activity
+    const availableModels = models.filter(m => m.available);
+    const primaryModel = availableModels[0];
+
+    if (primaryModel) {
+      const activityId = addActivity({
+        model: primaryModel.provider as ModelProvider,
+        modelName: primaryModel.name,
+        status: 'thinking',
+        task: `Анализирую запрос: "${input.slice(0, 50)}${input.length > 50 ? '...' : ''}"`,
+        startTime: Date.now(),
+      });
+
+      // Simulate status updates
+      setTimeout(() => updateActivity(activityId, { status: 'generating', task: 'Генерирую ответ...' }), 1500);
+    }
 
     try {
       const response = await fetch('/api/orchestrate', {
@@ -81,6 +102,16 @@ export default function Home() {
       });
 
       const data = await response.json();
+
+      // Mark activity complete
+      if (activities.length > 0) {
+        const lastActivity = activities[activities.length - 1];
+        updateActivity(lastActivity.id, {
+          status: 'complete',
+          endTime: Date.now(),
+          output: data.message?.slice(0, 200),
+        });
+      }
 
       if (data.type === 'clarification') {
         const assistantMessage = addMessage({
@@ -248,19 +279,33 @@ export default function Home() {
       {/* Tab Content */}
       <main className="flex flex-1 flex-col overflow-hidden">
         {activeTab === 'chat' && (
-          <>
-            <MessageList
-              messages={messages}
-              onClarificationAnswer={
-                pendingClarification ? handleClarificationAnswer : undefined
-              }
-            />
-            <ChatInput
-              onSubmit={handleSubmit}
-              isProcessing={isProcessing}
-              placeholder="Опишите задачу... (Shift+Enter для новой строки)"
-            />
-          </>
+          <div className="flex flex-1 overflow-hidden">
+            {/* Main Chat Area */}
+            <div className="flex flex-1 flex-col">
+              <MessageList
+                messages={messages}
+                onClarificationAnswer={
+                  pendingClarification ? handleClarificationAnswer : undefined
+                }
+              />
+              <ChatInput
+                onSubmit={handleSubmit}
+                isProcessing={isProcessing}
+                placeholder="Опишите задачу... (Shift+Enter для новой строки)"
+              />
+            </div>
+
+            {/* Activity Sidebar */}
+            {(isProcessing || activities.length > 0) && (
+              <div className="w-80 border-l border-orchestrator-border bg-orchestrator-card p-4 overflow-y-auto">
+                <ActivityFeed
+                  activities={activities}
+                  isExpanded={activityExpanded}
+                  onToggleExpand={() => setActivityExpanded(!activityExpanded)}
+                />
+              </div>
+            )}
+          </div>
         )}
 
         {activeTab === 'projects' && <ProjectsDashboard />}
