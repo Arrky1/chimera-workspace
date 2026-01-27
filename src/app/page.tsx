@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Header,
   ChatInput,
@@ -18,6 +18,13 @@ import { Message, ModelConfig, ClarificationRequest, ExecutionPlan, ModelProvide
 import { MessageSquare, FolderGit2, Settings, Activity } from 'lucide-react';
 
 type TabType = 'chat' | 'projects' | 'monitor' | 'settings';
+
+interface QueuedMessage {
+  id: string;
+  input: string;
+  attachments?: File[];
+  status: 'queued' | 'processing';
+}
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState<TabType>('chat');
@@ -43,6 +50,10 @@ export default function Home() {
     avgTime: number;
     contribution: number;
   }[]>([]);
+
+  // Message queue
+  const [messageQueue, setMessageQueue] = useState<QueuedMessage[]>([]);
+  const processingRef = useRef(false);
 
   // Fetch available models on mount
   useEffect(() => {
@@ -75,18 +86,22 @@ export default function Home() {
     );
   };
 
-  const handleSubmit = async (input: string, attachments?: File[]) => {
+  // Enqueue message — user can always send, messages queue up
+  const enqueueMessage = useCallback((input: string, attachments?: File[]) => {
     if (!input.trim()) return;
 
-    // Check if user wants to work with a project — switch to Projects tab with chat
+    // Check if user wants to work with a project — instant, no queue
     const revisionMatch = input.match(/(?:ревизи[яю]|проверь|анализ|review|analyze)\s+(?:проект[а]?\s+)?(.+)/i);
     if (revisionMatch) {
+      addMessage({ role: 'user', content: input });
       addMessage({ role: 'assistant', content: 'Переключаюсь на вкладку Projects. Используйте чат проекта для работы с конкретным репозиторием.' });
       setActiveTab('projects');
       return;
     }
 
-    // Add user message
+    const queueId = `q-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+    // Add user message immediately (always visible)
     addMessage({
       role: 'user',
       content: input,
@@ -98,8 +113,33 @@ export default function Home() {
       })),
     });
 
-    setIsProcessing(true);
+    // If already processing, add a placeholder showing queue status
+    if (processingRef.current) {
+      addMessage({
+        role: 'assistant',
+        content: '',
+        queueStatus: 'queued',
+        queueId,
+      });
+    }
+
+    // Add to queue
+    setMessageQueue(prev => [...prev, {
+      id: queueId,
+      input,
+      attachments,
+      status: 'queued',
+    }]);
+  }, []);
+
+  // Process a single message (extracted from old handleSubmit)
+  const processMessage = useCallback(async (input: string, queueId: string) => {
     clearActivities();
+
+    // Update placeholder from "queued" to "processing"
+    setMessages(prev => prev.map(msg =>
+      msg.queueId === queueId ? { ...msg, queueStatus: 'processing' as const } : msg
+    ));
 
     // Simulate AI activity
     const availableModels = models.filter(m => m.available);
@@ -113,13 +153,15 @@ export default function Home() {
         task: `Анализирую запрос: "${input.slice(0, 50)}${input.length > 50 ? '...' : ''}"`,
         startTime: Date.now(),
       });
-
-      // Simulate status updates
       setTimeout(() => updateActivity(activityId, { status: 'generating', task: 'Генерирую ответ...' }), 1500);
     }
 
+    // Remove placeholder helper
+    const removePlaceholder = () => {
+      setMessages(prev => prev.filter(msg => msg.queueId !== queueId));
+    };
+
     try {
-      // Формируем историю последних сообщений для контекста
       const recentHistory = messages.slice(-10).map(m => ({
         role: m.role,
         content: m.content,
@@ -142,6 +184,7 @@ export default function Home() {
         let errorData;
         try { errorData = JSON.parse(errorText); } catch { errorData = null; }
         const errorMsg = errorData?.message || errorData?.details || `Сервер вернул ошибку ${response.status}`;
+        removePlaceholder();
         addMessage({ role: 'assistant', content: `Ошибка: ${errorMsg}` });
         return;
       }
@@ -157,6 +200,8 @@ export default function Home() {
           output: data.message?.slice(0, 200),
         });
       }
+
+      removePlaceholder();
 
       if (data.type === 'clarification') {
         const assistantMessage = addMessage({
@@ -181,7 +226,6 @@ export default function Home() {
           await executePlan(data.plan, assistantMessage.id);
         }
       } else if (data.type === 'execution_complete') {
-        // Сервер автоматически выполнил задачу (medium/complex) — одно сообщение с планом и результатами
         addMessage({
           role: 'assistant',
           content: data.message || 'Выполнение завершено.',
@@ -201,14 +245,41 @@ export default function Home() {
       }
     } catch (error) {
       console.error('Submit error:', error);
+      removePlaceholder();
       addMessage({
         role: 'assistant',
-        content: '❌ Произошла ошибка при обработке запроса. Попробуйте снова.',
+        content: 'Произошла ошибка при обработке запроса. Попробуйте снова.',
       });
-    } finally {
-      setIsProcessing(false);
     }
-  };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [models, messages, sessionId, activities]);
+
+  // Queue processor — picks next queued message when ready
+  useEffect(() => {
+    if (processingRef.current) return;
+    if (pendingClarification) return;
+
+    const nextItem = messageQueue.find(m => m.status === 'queued');
+    if (!nextItem) {
+      if (messageQueue.length === 0) setIsProcessing(false);
+      return;
+    }
+
+    processingRef.current = true;
+    setIsProcessing(true);
+
+    // Mark as processing in queue
+    setMessageQueue(prev =>
+      prev.map(m => m.id === nextItem.id ? { ...m, status: 'processing' as const } : m)
+    );
+
+    processMessage(nextItem.input, nextItem.id).finally(() => {
+      // Remove from queue, release lock
+      setMessageQueue(prev => prev.filter(m => m.id !== nextItem.id));
+      processingRef.current = false;
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messageQueue, pendingClarification]);
 
   const handleClarificationAnswer = async (answers: Record<string, string>) => {
     if (!pendingClarification) return;
@@ -385,11 +456,12 @@ export default function Home() {
                 }
               />
               <ChatInput
-                onSubmit={handleSubmit}
+                onSubmit={enqueueMessage}
                 isProcessing={isProcessing}
                 placeholder="Опишите задачу... (Shift+Enter для новой строки)"
                 value={chatInputValue}
                 onChange={setChatInputValue}
+                queueLength={messageQueue.filter(m => m.status === 'queued').length}
               />
             </div>
 

@@ -2,7 +2,7 @@
 
 import { useEffect, useRef } from 'react';
 import { Message } from '@/types';
-import { User, Bot, Image as ImageIcon, FileText } from 'lucide-react';
+import { User, Bot, Image as ImageIcon, FileText, Clock, Loader2 } from 'lucide-react';
 import { ClarificationDialog } from './ClarificationDialog';
 import { ExecutionStatus } from './ExecutionStatus';
 
@@ -92,10 +92,24 @@ export function MessageList({ messages, onClarificationAnswer }: MessageListProp
               </div>
             )}
 
-            {/* Message content */}
-            {message.content && (
+            {/* Queue status placeholder */}
+            {message.queueStatus ? (
+              <div className="flex items-center gap-2 text-sm text-gray-400 py-1">
+                {message.queueStatus === 'queued' ? (
+                  <>
+                    <Clock size={14} className="text-yellow-500" />
+                    <span>В очереди...</span>
+                  </>
+                ) : (
+                  <>
+                    <Loader2 size={14} className="animate-spin text-orchestrator-accent" />
+                    <span>Обрабатываю...</span>
+                  </>
+                )}
+              </div>
+            ) : message.content ? (
               <div className="whitespace-pre-wrap">{message.content}</div>
-            )}
+            ) : null}
 
             {/* Clarification dialog */}
             {message.clarification && onClarificationAnswer && (

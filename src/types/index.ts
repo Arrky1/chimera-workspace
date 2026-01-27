@@ -24,6 +24,8 @@ export interface Message {
   clarification?: ClarificationRequest;
   executionPlan?: ExecutionPlan;
   modelResponses?: ModelResponse[];
+  queueStatus?: 'queued' | 'processing';
+  queueId?: string;
 }
 
 export interface Attachment {

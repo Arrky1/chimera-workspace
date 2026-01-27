@@ -9,9 +9,10 @@ interface ChatInputProps {
   placeholder?: string;
   value?: string;
   onChange?: (value: string) => void;
+  queueLength?: number;
 }
 
-export function ChatInput({ onSubmit, isProcessing, placeholder, value, onChange }: ChatInputProps) {
+export function ChatInput({ onSubmit, isProcessing, placeholder, value, onChange, queueLength }: ChatInputProps) {
   const [localInput, setLocalInput] = useState('');
   const input = value !== undefined ? value : localInput;
   const setInput = onChange || setLocalInput;
@@ -66,7 +67,6 @@ export function ChatInput({ onSubmit, isProcessing, placeholder, value, onChange
 
   const handleSubmit = () => {
     if (!input.trim() && attachments.length === 0) return;
-    if (isProcessing) return;
 
     onSubmit(input, attachments.length > 0 ? attachments : undefined);
     setInput('');
@@ -129,7 +129,6 @@ export function ChatInput({ onSubmit, isProcessing, placeholder, value, onChange
             rows={3}
             className="w-full resize-none bg-transparent text-white placeholder-gray-500 focus:outline-none"
             style={{ minHeight: '72px', maxHeight: '160px' }}
-            disabled={isProcessing}
           />
 
           {/* Action buttons */}
@@ -182,13 +181,14 @@ export function ChatInput({ onSubmit, isProcessing, placeholder, value, onChange
         {/* Send button */}
         <button
           onClick={handleSubmit}
-          disabled={isProcessing || (!input.trim() && attachments.length === 0)}
-          className="flex h-12 w-12 items-center justify-center rounded-xl bg-orchestrator-accent text-white transition-all hover:bg-orchestrator-accent-hover disabled:opacity-50 disabled:cursor-not-allowed"
+          disabled={!input.trim() && attachments.length === 0}
+          className="relative flex h-12 w-12 items-center justify-center rounded-xl bg-orchestrator-accent text-white transition-all hover:bg-orchestrator-accent-hover disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          {isProcessing ? (
-            <Loader2 size={20} className="animate-spin" />
-          ) : (
-            <Send size={20} />
+          <Send size={20} />
+          {!!queueLength && queueLength > 0 && (
+            <span className="absolute -top-1.5 -right-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-yellow-500 text-[10px] font-bold text-black">
+              {queueLength}
+            </span>
           )}
         </button>
       </div>
