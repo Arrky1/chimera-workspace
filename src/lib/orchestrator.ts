@@ -242,6 +242,11 @@ export function createExecutionPlan(
     });
   }
 
+  // Determine best model for the task type
+  const taskType = intent.action === 'analyze' ? 'analysis' : 'code';
+  const bestModel = getBestModelForTask(taskType, availableModels);
+  const bestProvider: ModelProvider = bestModel?.provider || 'claude';
+
   // Main execution phase
   if (classification.recommendedMode === 'swarm' && classification.estimatedSubtasks >= 3) {
     phases.push({
@@ -258,19 +263,22 @@ export function createExecutionPlan(
       mode: 'single',
       name: 'Implementation',
       status: 'pending',
-      models: ['claude'],
+      models: [bestProvider],
       progress: 0,
     });
   }
 
-  // Add deliberation for quality review
+  // Add deliberation for quality review — pick two different models
   if (classification.complexity !== 'simple' && availableModels.length >= 2) {
+    const allProviders = getProviders();
+    const reviewModel1 = bestProvider;
+    const reviewModel2 = allProviders.find(p => p !== bestProvider) || allProviders[0];
     phases.push({
       id: 'phase-deliberation',
       mode: 'deliberation',
       name: 'Quality Review (Deliberation)',
       status: 'pending',
-      models: ['claude', 'openai'],
+      models: [reviewModel1, reviewModel2],
       progress: 0,
     });
   }

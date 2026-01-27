@@ -18,6 +18,7 @@ import {
   OrchestrateRequestSchema,
   validateOrThrow,
 } from '@/lib/schemas';
+import { getAllProjects, getProjectContextSummary } from '@/lib/project-store';
 import {
   createExecution,
   getExecution,
@@ -30,6 +31,19 @@ import {
   setIdempotency,
   generateExecutionId,
 } from '@/lib/execution-store';
+
+// Build context from all added projects
+function getProjectsContext(): string {
+  const projects = getAllProjects();
+  if (projects.length === 0) return '';
+
+  const projectSummaries = projects.map(p => {
+    const summary = getProjectContextSummary(p.id);
+    return summary || `- ${p.owner}/${p.repo} (${p.status})`;
+  }).join('\n\n');
+
+  return `\n\n## Проекты пользователя\nВ системе добавлены следующие проекты. Используй эту информацию при ответах:\n\n${projectSummaries}`;
+}
 
 // Rate limiting for parallel requests
 const MAX_CONCURRENT_REQUESTS = 3;
@@ -281,15 +295,26 @@ async function executeSimpleTask(
   // Start phase tracking
   await startPhase(executionId, plan.phases[0].id);
 
-  // Include available tools in system prompt
+  // Include available tools and project context in system prompt
   const toolsDescription = getToolDescriptions();
-  const systemPrompt = `You are a helpful AI assistant that helps with coding tasks. Be concise and provide working code.
+  const projectsContext = getProjectsContext();
+  const systemPrompt = `Ты — Chimera AI, мультимодельный ассистент для разработки и анализа кода. Отвечай на том языке, на котором пишет пользователь.${projectsContext}
 
-Available tools you can use:
+## Доступные инструменты
 ${toolsDescription}
 
-To use a tool, format your response as:
-<tool_use name="tool_name">{"param": "value"}</tool_use>`;
+Для использования инструмента:
+<tool_use name="tool_name">{"param": "value"}</tool_use>
+
+## Инструкции
+- Отвечай КРАТКО и по делу. Не выдавай огромные блоки кода без запроса
+- Если нужен код — показывай только ключевые фрагменты (до 20 строк), не весь файл
+- Называй файлы, строки, проблемы конкретно
+- Если пользователь спрашивает о проекте, используй контекст выше
+- Для чтения файлов проекта используй file_system с путём: owner/repo/path
+- Для GitHub API используй инструмент github
+- Предлагай исправления с примерами кода
+- Не задавай лишних вопросов — сразу действуй`;
 
   const startTime = Date.now();
   const response = await withRetry(() => generateWithModel(
@@ -466,6 +491,11 @@ async function handlePlanExecution(plan: ExecutionPlan, idempotencyKey?: string)
 // Execute single model mode
 async function executeSingleMode(task: string, provider: ModelProvider) {
   const model = getAvailableModels().find(m => m.provider === provider && m.available);
+  const projectsContext = getProjectsContext();
+  const singleSystemPrompt = `Ты — Chimera AI, эксперт по разработке. Выполни задачу полностью и конкретно.${projectsContext}
+
+Отвечай на том языке, на котором написана задача.
+Будь КРАТКИМ — не выдавай огромные блоки кода без запроса. Показывай только ключевые фрагменты.`;
 
   if (!model) {
     // Fallback to any available model
@@ -477,7 +507,7 @@ async function executeSingleMode(task: string, provider: ModelProvider) {
       fallbackModel.provider,
       fallbackModel.apiModel,
       task,
-      'You are a helpful coding assistant. Complete the task thoroughly.'
+      singleSystemPrompt
     ));
     return { output: response.content, model: fallbackModel.name };
   }
@@ -486,7 +516,7 @@ async function executeSingleMode(task: string, provider: ModelProvider) {
     model.provider,
     model.apiModel,
     task,
-    'You are a helpful coding assistant. Complete the task thoroughly.'
+    singleSystemPrompt
   ));
 
   return { output: response.content, model: model.name };

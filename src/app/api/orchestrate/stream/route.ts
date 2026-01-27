@@ -27,8 +27,16 @@ import {
   cancelExecution,
 } from '@/lib/execution-store';
 
-// Active executions for cancellation support
+// Active executions for cancellation support (with auto-cleanup after 10 min)
 const activeExecutions = new Map<string, AbortController>();
+const EXECUTION_TIMEOUT_MS = 10 * 60 * 1000;
+
+function registerExecution(id: string, controller: AbortController) {
+  activeExecutions.set(id, controller);
+  setTimeout(() => {
+    activeExecutions.delete(id);
+  }, EXECUTION_TIMEOUT_MS);
+}
 
 /**
  * Send SSE event
@@ -126,9 +134,9 @@ export async function POST(request: NextRequest) {
         });
         executionId = executionState.id;
 
-        // Register for cancellation
+        // Register for cancellation (auto-cleanup after timeout)
         const abortController = new AbortController();
-        activeExecutions.set(executionId, abortController);
+        registerExecution(executionId, abortController);
 
         // Set idempotency
         if (idempotencyKey) {

@@ -69,12 +69,17 @@ export function ChatInput({ onSubmit, isProcessing, placeholder }: ChatInputProp
           <textarea
             ref={textareaRef}
             value={input}
-            onChange={(e) => setInput(e.target.value)}
+            onChange={(e) => {
+              setInput(e.target.value);
+              // Auto-resize
+              e.target.style.height = 'auto';
+              e.target.style.height = Math.min(e.target.scrollHeight, 160) + 'px';
+            }}
             onKeyDown={handleKeyDown}
             placeholder={placeholder || 'Опишите задачу или перетащите файлы...'}
-            rows={1}
+            rows={3}
             className="w-full resize-none bg-transparent text-white placeholder-gray-500 focus:outline-none"
-            style={{ maxHeight: '150px' }}
+            style={{ minHeight: '72px', maxHeight: '160px' }}
             disabled={isProcessing}
           />
 

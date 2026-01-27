@@ -1,4 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { createHmac } from 'crypto';
+
+function generateAuthToken(password: string): string {
+  const secret = process.env.AUTH_SECRET || 'chimera-default-secret';
+  return createHmac('sha256', secret).update(password).digest('hex');
+}
 
 export async function POST(request: NextRequest) {
   try {
@@ -14,9 +20,10 @@ export async function POST(request: NextRequest) {
 
     if (password === authPassword) {
       const response = NextResponse.json({ success: true });
+      const token = generateAuthToken(password);
 
-      // Set auth cookie (7 days expiry)
-      response.cookies.set('chimera-auth', authPassword, {
+      // Set auth cookie with token (not password)
+      response.cookies.set('chimera-auth', token, {
         httpOnly: true,
         secure: process.env.NODE_ENV === 'production',
         sameSite: 'lax',

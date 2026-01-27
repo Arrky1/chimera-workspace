@@ -1,7 +1,17 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 
-export function middleware(request: NextRequest) {
+async function generateAuthToken(password: string): Promise<string> {
+  const secret = process.env.AUTH_SECRET || 'chimera-default-secret';
+  const encoder = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    'raw', encoder.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']
+  );
+  const signature = await crypto.subtle.sign('HMAC', key, encoder.encode(password));
+  return Array.from(new Uint8Array(signature)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+export async function middleware(request: NextRequest) {
   // Skip auth for health check endpoints
   const healthPaths = ['/api/health', '/api/healthz', '/api/orchestrate'];
   if (healthPaths.some(p => request.nextUrl.pathname === p) && request.method === 'GET') {
@@ -14,10 +24,13 @@ export function middleware(request: NextRequest) {
     return NextResponse.next();
   }
 
-  // Check for auth cookie
+  // Check for auth cookie (now stores HMAC token, not password)
   const authCookie = request.cookies.get('chimera-auth');
-  if (authCookie?.value === authPassword) {
-    return NextResponse.next();
+  if (authCookie?.value) {
+    const expectedToken = await generateAuthToken(authPassword);
+    if (authCookie.value === expectedToken) {
+      return NextResponse.next();
+    }
   }
 
   // Check for auth header (for API calls)

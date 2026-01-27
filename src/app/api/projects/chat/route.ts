@@ -13,8 +13,12 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const { projectId, message } = body;
 
-    if (!projectId || !message) {
-      return NextResponse.json({ error: 'projectId and message required' }, { status: 400 });
+    if (!projectId || !message || typeof projectId !== 'string' || typeof message !== 'string') {
+      return NextResponse.json({ error: 'projectId and message required (strings)' }, { status: 400 });
+    }
+
+    if (message.length > 10000) {
+      return NextResponse.json({ error: 'Message too long (max 10000 chars)' }, { status: 400 });
     }
 
     const project = getProject(projectId);
@@ -31,8 +35,14 @@ export async function POST(request: NextRequest) {
     // Try to get file listing from cloned repo
     let fileStructure = '';
     try {
-      const reposDir = path.join(process.cwd(), '.chimera-repos');
-      const repoPath = path.join(reposDir, project.owner, project.repo);
+      // Sanitize owner/repo to prevent path traversal
+      const safeOwner = path.basename(project.owner);
+      const safeRepo = path.basename(project.repo);
+      const reposDir = path.resolve(process.cwd(), '.chimera-repos');
+      const repoPath = path.resolve(reposDir, safeOwner, safeRepo);
+      if (!repoPath.startsWith(reposDir + path.sep)) {
+        throw new Error('Invalid repo path');
+      }
       const entries = await fs.readdir(repoPath);
       fileStructure = `\n\n## Файлы в корне репо:\n${entries.filter(e => !e.startsWith('.')).join(', ')}`;
     } catch {
@@ -55,6 +65,8 @@ ${toolsDescription}
 ## Для github: owner="${project.owner}", repo="${project.repo}"
 
 ## Инструкции
+- Отвечай КРАТКО и по делу. Не выдавай огромные блоки кода если не просят
+- Если нужен код — показывай только ключевые фрагменты (до 20 строк), не весь файл
 - Отвечай на вопросы о проекте используя контекст выше
 - Используй file_system для чтения конкретных файлов
 - Будь конкретным — называй файлы, строки, проблемы

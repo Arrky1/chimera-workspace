@@ -60,10 +60,11 @@ export function ProjectsDashboard() {
     return () => clearInterval(interval);
   }, []);
 
-  // Fetch analysis when project selected
+  // Fetch analysis and chat history when project selected
   useEffect(() => {
     if (selectedProject) {
       fetchAnalysis(selectedProject.id);
+      fetchChatHistory(selectedProject.id);
     }
   }, [selectedProject?.id]);
 
@@ -97,6 +98,23 @@ export function ProjectsDashboard() {
       setAnalysis(data.analysis || null);
     } catch (error) {
       console.error('Failed to fetch analysis:', error);
+    }
+  };
+
+  const fetchChatHistory = async (projectId: string) => {
+    try {
+      const res = await fetch(`/api/projects/chat?projectId=${projectId}`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.messages && data.messages.length > 0) {
+          setChatMessages(prev => ({
+            ...prev,
+            [projectId]: data.messages,
+          }));
+        }
+      }
+    } catch (error) {
+      console.error('Failed to fetch chat history:', error);
     }
   };
 
@@ -722,12 +740,17 @@ export function ProjectsDashboard() {
                     <textarea
                       ref={chatInputRef}
                       value={chatInput}
-                      onChange={(e) => setChatInput(e.target.value)}
+                      onChange={(e) => {
+                        setChatInput(e.target.value);
+                        // Auto-resize
+                        e.target.style.height = 'auto';
+                        e.target.style.height = Math.min(e.target.scrollHeight, 160) + 'px';
+                      }}
                       onKeyDown={handleChatKeyDown}
                       placeholder={`Ask about ${selectedProject.name}...`}
-                      rows={1}
+                      rows={3}
                       className="flex-1 resize-none rounded-xl border border-orchestrator-border bg-orchestrator-bg px-4 py-3 text-sm text-white placeholder-gray-500 focus:border-orchestrator-accent focus:outline-none"
-                      style={{ minHeight: '44px', maxHeight: '120px' }}
+                      style={{ minHeight: '80px', maxHeight: '160px' }}
                     />
                     <button
                       onClick={sendChatMessage}
