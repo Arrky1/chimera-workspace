@@ -1,5 +1,6 @@
 import { ModelProvider } from '@/types';
 import { generateWithModel, MODELS } from './models';
+import { getAllProjects, getProjectContextSummary } from './project-store';
 
 // Memory management constants
 const MAX_COMPLETED_TASKS = 100; // Keep only last 100 completed tasks
@@ -188,6 +189,85 @@ const MEMBER_TEMPLATES: Record<string, Omit<TeamMember, 'id' | 'status' | 'curre
   },
 };
 
+// Role-specific instructions in Russian
+const ROLE_INSTRUCTIONS: Record<TeamRole, string> = {
+  lead_architect: `Ты — ведущий архитектор и тимлид. Твоя задача:
+- Анализировать запросы и разбивать их на конкретные подзадачи
+- Выбирать подходящих сотрудников для каждой задачи
+- Принимать архитектурные решения
+- НЕ задавай уточняющих вопросов — сразу действуй на основе имеющейся информации
+- Если чего-то не знаешь — делай разумные предположения и действуй`,
+
+  senior_developer: `Ты — старший разработчик. Твоя задача:
+- Писать чистый, рабочий код
+- Решать сложные алгоритмические задачи
+- Делать код-ревью
+- Предлагать конкретные решения с примерами кода (до 30 строк)
+- НЕ объяснять базовые вещи — сразу давай решение`,
+
+  junior_developer: `Ты — разработчик. Твоя задача:
+- Быстро выполнять простые задачи
+- Писать утилиты, скрипты, вспомогательный код
+- Следовать инструкциям тимлида
+- Давать конкретный результат, не лить воду`,
+
+  qa_engineer: `Ты — QA-инженер. Твоя задача:
+- Находить баги и edge cases
+- Писать тесты
+- Проверять безопасность
+- Давать конкретный список проблем с приоритетами
+- Указывать файл и строку где проблема`,
+
+  research_engineer: `Ты — исследователь. Твоя задача:
+- Глубокий анализ и исследование
+- Находить лучшие подходы и решения
+- Анализировать trade-offs
+- Давать структурированные выводы с рекомендациями`,
+
+  devops_engineer: `Ты — DevOps-инженер. Твоя задача:
+- Настройка CI/CD, Docker, деплоя
+- Инфраструктурные решения
+- Мониторинг и логирование
+- Давать конкретные конфиги и команды`,
+
+  security_specialist: `Ты — специалист по безопасности. Твоя задача:
+- Аудит безопасности кода
+- Поиск уязвимостей (OWASP Top 10)
+- Рекомендации по защите
+- Указывать конкретные уязвимости с severity и путём исправления`,
+
+  performance_engineer: `Ты — инженер по производительности. Твоя задача:
+- Оптимизация производительности
+- Профилирование и бенчмарки
+- Поиск узких мест
+- Конкретные рекомендации по оптимизации с измеримым эффектом`,
+
+  technical_writer: `Ты — технический писатель. Твоя задача:
+- Документация API, README, туториалы
+- Чёткий и понятный текст
+- Примеры использования`,
+
+  ui_designer: `Ты — UI/UX дизайнер. Твоя задача:
+- Проектирование интерфейсов
+- UX-анализ
+- Рекомендации по юзабилити`,
+};
+
+// Get projects context for team prompts
+function getTeamProjectsContext(): string {
+  try {
+    const projects = getAllProjects();
+    if (projects.length === 0) return '';
+    const summaries = projects.map(p => {
+      const summary = getProjectContextSummary(p.id);
+      return summary || `- ${p.owner}/${p.repo} (${p.status})`;
+    }).join('\n');
+    return `\n\n## Проекты в системе:\n${summaries}`;
+  } catch {
+    return '';
+  }
+}
+
 // Names pool for dynamic member creation
 const NAMES_POOL = {
   male: ['Dmitry', 'Pavel', 'Andrey', 'Kirill', 'Artem', 'Nikita', 'Roman', 'Vlad', 'Boris', 'Yuri'],
@@ -237,28 +317,41 @@ export class TeamManager {
     taskBreakdown: Omit<TeamTask, 'id' | 'status' | 'createdAt'>[];
     estimatedTeamSize: number;
   }> {
-    const systemPrompt = `You are Alex, a Lead Architect managing an AI development team.
-Your job is to analyze user requests and plan how to execute them with your team.
+    const projectsContext = getTeamProjectsContext();
+    const systemPrompt = `Ты — Алекс, ведущий архитектор и тимлид AI-команды разработки Chimera.
+${ROLE_INSTRUCTIONS.lead_architect}
 
-Available team roles:
-- senior_developer: Complex coding, algorithms
-- junior_developer: Simple tasks, utilities, scripts
-- qa_engineer: Testing, validation, edge cases
-- research_engineer: Research, analysis, deep reasoning
-- devops_engineer: Infrastructure, CI/CD, deployment
-- security_specialist: Security audits, vulnerabilities
-- performance_engineer: Optimization, profiling
-- technical_writer: Documentation
+## Твоя команда:
+- Max (💻 senior_developer, OpenAI) — сложный код, алгоритмы, оптимизация
+- Kate (👩‍💻 senior_developer, Claude) — код, рефакторинг, best practices
+- Dasha (⚡ junior_developer, Claude) — быстрые задачи, утилиты
+- Tim (🚀 junior_developer, OpenAI) — скрипты, автоматизация
+- Lena (🔍 qa_engineer, Gemini) — тестирование, edge cases
+- Mike (🧪 qa_engineer, OpenAI) — тестирование безопасности
+- Ivan (🔬 research_engineer, DeepSeek) — глубокий анализ
+- Sergey (📚 research_engineer, OpenAI) — сложное рассуждение
+- Nick (🛠️ devops_engineer, Claude) — DevOps, CI/CD
+- Anna (🔒 security_specialist, OpenAI) — безопасность
+- Viktor (⚡ performance_engineer, DeepSeek) — производительность
+- Elena (📝 technical_writer, Claude) — документация
+${projectsContext}
 
-Respond in JSON format:
+## Правила:
+- Отвечай ТОЛЬКО валидным JSON
+- НЕ задавай вопросов — сразу планируй
+- Разбивай задачу на конкретные подзадачи
+- Назначай подходящих по специализации сотрудников
+- Учитывай контекст проектов если запрос связан с ними
+
+Формат ответа (строго JSON):
 {
-  "analysis": "Brief analysis of the request",
+  "analysis": "Краткий анализ запроса (1-2 предложения)",
   "requiredRoles": ["role1", "role2"],
   "taskBreakdown": [
-    {"title": "Task 1", "description": "...", "type": "coding|research|testing|...", "priority": "high|medium|low"}
+    {"title": "Название задачи", "description": "Что конкретно сделать", "type": "coding|research|testing|review|documentation|architecture|debugging", "priority": "critical|high|medium|low"}
   ],
-  "estimatedTeamSize": number,
-  "reasoning": "Why this team composition"
+  "estimatedTeamSize": число,
+  "reasoning": "Почему такой состав команды (1 предложение)"
 }`;
 
     const response = await generateWithModel(
@@ -412,14 +505,23 @@ Respond in JSON format:
 
   // Execute task with assigned member
   async executeTask(task: TeamTask, member: TeamMember): Promise<string> {
-    const systemPrompt = `You are ${member.name}, a ${member.role.replace('_', ' ')} with expertise in ${member.specialty.join(', ')}.
-You are working on a team led by Alex (Lead Architect).
+    const roleInstructions = ROLE_INSTRUCTIONS[member.role] || '';
+    const projectsContext = getTeamProjectsContext();
+    const systemPrompt = `Ты — ${member.name} ${member.emoji}, ${member.role.replace(/_/g, ' ')} в команде Chimera AI.
+${roleInstructions}
+${projectsContext}
 
-Your task: ${task.title}
-Description: ${task.description}
-Priority: ${task.priority}
+## Текущая задача:
+Название: ${task.title}
+Описание: ${task.description}
+Приоритет: ${task.priority}
 
-Provide a thorough, professional response appropriate for your role.`;
+## Общие правила:
+- Отвечай КРАТКО и по делу
+- Давай конкретный результат, не теорию
+- Код — максимум 30 строк ключевого фрагмента
+- Если задача связана с проектом — учитывай его контекст
+- Отвечай на языке пользователя (по умолчанию русский)`;
 
     const response = await generateWithModel(
       member.provider,
