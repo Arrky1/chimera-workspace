@@ -484,8 +484,21 @@ ${toolsDescription}
 
   await completePhase(executionId, plan.phases[0].id, { content: finalContent });
 
+  // Log raw content before strip
+  console.log(`[SimpleTask] Raw finalContent length: ${finalContent.length}`);
+  console.log(`[SimpleTask] Raw finalContent preview: ${finalContent.slice(0, 200)}`);
+
   // Strip code blocks — пользователь видит только заключения
   finalContent = stripCodeBlocks(finalContent);
+
+  console.log(`[SimpleTask] After strip length: ${finalContent.length}`);
+  console.log(`[SimpleTask] After strip preview: ${finalContent.slice(0, 200)}`);
+
+  // Защита от пустого ответа
+  if (!finalContent || finalContent.trim().length === 0 || finalContent.trim() === '[см. код в результатах анализа]') {
+    finalContent = 'Задача выполнена. К сожалению, модель вернула только код без текстовых выводов. Попробуйте переформулировать запрос — например, попросите объяснить или проанализировать вместо генерации кода.';
+    console.log(`[SimpleTask] ⚠️ Empty response detected, using fallback message`);
+  }
 
   // Save assistant response to chat history
   addChatMessage({ role: 'assistant', content: finalContent, timestamp: Date.now() }, session);
@@ -602,18 +615,32 @@ async function handlePlanExecution(plan: ExecutionPlan, idempotencyKey?: string,
 
   plan.status = 'completed';
 
+  // Log results for debugging
+  console.log(`[PlanExec] ${results.length} phases completed`);
+  results.forEach((r, i) => {
+    const res = r.result as Record<string, unknown> | null;
+    const keys = res ? Object.keys(res) : [];
+    console.log(`[PlanExec] Phase ${i} "${r.phase}": keys=[${keys.join(',')}]`);
+    if (res?.synthesis) console.log(`[PlanExec]   synthesis: ${String(res.synthesis).slice(0, 100)}`);
+    if (res?.output) console.log(`[PlanExec]   output: ${String(res.output).slice(0, 100)}`);
+    if (res?.code) console.log(`[PlanExec]   code: ${String(res.code).slice(0, 100)}`);
+    if (res?.error) console.log(`[PlanExec]   error: ${String(res.error)}`);
+  });
+
   // Build a human-readable summary message for the user
   const resultParts = results.map(r => {
-    const res = r.result as { synthesis?: string; output?: string; tasks?: unknown[]; error?: string } | null;
+    const res = r.result as { synthesis?: string; output?: string; code?: string; tasks?: unknown[]; error?: string; model?: string } | null;
     if (!res) return '';
     if (res.error) return `**${r.phase}:** Ошибка — ${res.error}`;
-    const text = res.synthesis || res.output || '';
+    const text = res.synthesis || res.output || res.code || '';
     return text ? `**${r.phase}:**\n${stripCodeBlocks(typeof text === 'string' ? text : JSON.stringify(text)).slice(0, 500)}` : '';
   }).filter(Boolean).join('\n\n');
 
   const summaryMessage = resultParts
     ? `Готово! Вот результаты:\n\n${resultParts}`
     : 'Выполнение завершено.';
+
+  console.log(`[PlanExec] Summary message length: ${summaryMessage.length}`);
 
   // Save to chat history
   addChatMessage({ role: 'assistant', content: summaryMessage, timestamp: Date.now() }, session);
