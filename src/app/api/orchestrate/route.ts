@@ -568,92 +568,59 @@ async function executeSingleMode(task: string, provider: ModelProvider) {
 async function executeSwarmMode(originalMessage: string) {
   const teamManager = getTeamManager();
 
-  // Alex analyzes and plans
+  // Алекс анализирует и планирует
   const taskPlan = await withRetry(() =>
     teamManager.analyzeAndPlanTask(originalMessage)
   );
 
-  // Assemble team with availability check
-  const availableModels = getAvailableModels().filter(m => m.available);
-  const availableProviders = new Set(availableModels.map(m => m.provider));
-
-  // Filter roles to only those with available models
-  const viableRoles = taskPlan.requiredRoles.filter(role => {
-    const roleProviderMap: Record<string, ModelProvider[]> = {
-      'senior_developer': ['claude', 'openai'],
-      'junior_developer': ['claude', 'openai'],
-      'qa_engineer': ['gemini', 'openai'],
-      'research_engineer': ['deepseek', 'qwen', 'openai'],
-      'devops_engineer': ['claude'],
-      'security_specialist': ['openai'],
-      'performance_engineer': ['deepseek', 'claude'],
-      'technical_writer': ['claude'],
-      'ui_designer': ['gemini', 'claude'],
-      'lead_architect': ['claude'],
-    };
-
-    const providers = roleProviderMap[role] || ['claude'];
-    return providers.some(p => availableProviders.has(p));
-  });
-
-  const team = teamManager.assembleTeam(viableRoles);
+  // Собираем команду — resolveModelForRole() внутри team.ts
+  // автоматически подберёт доступные модели для каждой роли
+  const team = teamManager.assembleTeam(taskPlan.requiredRoles);
   const tasks = taskPlan.taskBreakdown.map(t => teamManager.createTask(t));
 
-  // Create task execution functions
+  // Создаём функции выполнения задач
   const taskExecutors = tasks.map(task => async () => {
     const member = teamManager.assignTask(task, team);
     if (!member) {
-      return { taskId: task.id, member: 'unassigned', result: 'No available team member' };
+      return { taskId: task.id, member: 'не назначен', result: 'Нет свободных членов команды' };
     }
 
-    // Check if member's model is available
-    const memberModel = availableModels.find(
-      m => m.provider === member.provider && m.available
-    );
-
-    if (!memberModel) {
-      // Fallback to any available model
-      const fallback = availableModels[0];
-      if (fallback) {
-        const result = await generateWithModel(
-          fallback.provider,
-          fallback.apiModel,
-          task.description,
-          `Ты — ${member.name} (${member.role.replace(/_/g, ' ')}). Задача: ${task.title}. ${task.description}. Отвечай КРАТКО.`
-        );
-        return { taskId: task.id, member: member.name, result: result.content };
-      }
-      return { taskId: task.id, member: member.name, result: 'Model unavailable' };
-    }
-
+    // executeTask() внутри team.ts сам делает fallback при ошибке
     const result = await teamManager.executeTask(task, member);
-    return { taskId: task.id, member: member.name, result };
+    return {
+      taskId: task.id,
+      member: `${member.name} ${member.emoji}`,
+      provider: member.provider,
+      result,
+    };
   });
 
-  // Execute with rate limiting (parallel but controlled)
+  // Параллельное выполнение с rate limiting
   const swarmResults = await executeWithRateLimit(taskExecutors, MAX_CONCURRENT_REQUESTS);
 
-  // Alex synthesizes results
-  const synthesisModel = availableModels.find(m => m.provider === 'claude' && m.available);
-  let synthesis = 'Results compiled from team.';
+  // Алекс синтезирует результаты
+  const teamState = teamManager.getTeamState();
+  const lead = teamState.lead;
+  let synthesis = 'Результаты команды скомпилированы.';
 
-  if (synthesisModel && swarmResults.length > 0) {
+  if (swarmResults.length > 0) {
     const synthesisPrompt = `Результаты работы команды:
 
-${swarmResults.map(r => `**${r.member}:**\n${r.result}`).join('\n\n---\n\n')}
+${swarmResults.map(r => `**${r.member} (${r.provider}):**\n${r.result}`).join('\n\n---\n\n')}
 
 Исходный запрос: ${originalMessage}
 
-Объедини результаты в один структурированный ответ. Убери дублирования. Выдели главное.`;
+Объедини результаты в один структурированный ответ. Убери дублирования. Выдели главное.
+Если некоторые результаты пусты или содержат ошибки — не упоминай их, работай с тем что есть.`;
 
     const synthesisResponse = await withRetry(() => generateWithModel(
-      'claude',
-      synthesisModel.apiModel,
+      lead.provider,
+      lead.modelId,
       synthesisPrompt,
       'Ты — Алекс, ведущий архитектор команды Chimera. Синтезируй результаты команды КРАТКО и структурированно. Отвечай на русском.'
     ));
 
-    synthesis = synthesisResponse.content;
+    synthesis = synthesisResponse.content || synthesis;
   }
 
   return {

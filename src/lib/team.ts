@@ -1,5 +1,5 @@
 import { ModelProvider } from '@/types';
-import { generateWithModel, MODELS } from './models';
+import { generateWithModel, getAvailableModels } from './models';
 import { getAllProjects, getProjectContextSummary } from './project-store';
 
 // Memory management constants
@@ -74,7 +74,7 @@ const MEMBER_TEMPLATES: Record<string, Omit<TeamMember, 'id' | 'status' | 'curre
     role: 'senior_developer',
     emoji: '💻',
     provider: 'openai',
-    modelId: 'gpt-5.2',
+    modelId: 'o3',
     specialty: ['code', 'algorithms', 'mathematics', 'optimization'],
   },
   kate: {
@@ -100,7 +100,7 @@ const MEMBER_TEMPLATES: Record<string, Omit<TeamMember, 'id' | 'status' | 'curre
     role: 'junior_developer',
     emoji: '🚀',
     provider: 'openai',
-    modelId: 'o4-mini',
+    modelId: 'gpt-4o-mini',
     specialty: ['fast_code', 'scripts', 'automation'],
   },
 
@@ -110,7 +110,7 @@ const MEMBER_TEMPLATES: Record<string, Omit<TeamMember, 'id' | 'status' | 'curre
     role: 'qa_engineer',
     emoji: '🔍',
     provider: 'gemini',
-    modelId: 'gemini-3-pro',
+    modelId: 'gemini-2.5-pro-preview-05-06',
     specialty: ['testing', 'edge_cases', 'multimodal', 'validation'],
   },
   mike: {
@@ -118,7 +118,7 @@ const MEMBER_TEMPLATES: Record<string, Omit<TeamMember, 'id' | 'status' | 'curre
     role: 'qa_engineer',
     emoji: '🧪',
     provider: 'openai',
-    modelId: 'gpt-5.2',
+    modelId: 'o3',
     specialty: ['testing', 'security_testing', 'penetration'],
   },
 
@@ -128,7 +128,7 @@ const MEMBER_TEMPLATES: Record<string, Omit<TeamMember, 'id' | 'status' | 'curre
     role: 'research_engineer',
     emoji: '🔬',
     provider: 'deepseek',
-    modelId: 'deepseek-r1',
+    modelId: 'deepseek-reasoner',
     specialty: ['research', 'deep_reasoning', 'analysis', 'papers'],
   },
   sergey: {
@@ -164,7 +164,7 @@ const MEMBER_TEMPLATES: Record<string, Omit<TeamMember, 'id' | 'status' | 'curre
     role: 'security_specialist',
     emoji: '🔒',
     provider: 'openai',
-    modelId: 'gpt-5.2-pro',
+    modelId: 'o3',
     specialty: ['security', 'vulnerabilities', 'audit', 'compliance'],
   },
 
@@ -174,7 +174,7 @@ const MEMBER_TEMPLATES: Record<string, Omit<TeamMember, 'id' | 'status' | 'curre
     role: 'performance_engineer',
     emoji: '⚡',
     provider: 'deepseek',
-    modelId: 'deepseek-r1',
+    modelId: 'deepseek-chat',
     specialty: ['performance', 'optimization', 'profiling', 'benchmarks'],
   },
 
@@ -268,6 +268,48 @@ function getTeamProjectsContext(): string {
   }
 }
 
+// =============================================================================
+// Dynamic model selection — выбираем лучшую доступную модель для роли
+// =============================================================================
+
+// Приоритеты провайдеров по ролям (от наиболее к наименее предпочтительному)
+const ROLE_PROVIDER_PREFERENCES: Record<TeamRole, ModelProvider[]> = {
+  lead_architect: ['claude', 'openai', 'gemini', 'deepseek', 'qwen', 'grok'],
+  senior_developer: ['openai', 'claude', 'deepseek', 'gemini', 'grok', 'qwen'],
+  junior_developer: ['claude', 'openai', 'gemini', 'deepseek', 'grok', 'qwen'],
+  qa_engineer: ['gemini', 'openai', 'claude', 'deepseek', 'grok', 'qwen'],
+  research_engineer: ['deepseek', 'openai', 'qwen', 'claude', 'gemini', 'grok'],
+  devops_engineer: ['claude', 'openai', 'deepseek', 'gemini', 'grok', 'qwen'],
+  security_specialist: ['openai', 'claude', 'deepseek', 'gemini', 'grok', 'qwen'],
+  performance_engineer: ['deepseek', 'openai', 'claude', 'gemini', 'grok', 'qwen'],
+  technical_writer: ['claude', 'openai', 'gemini', 'deepseek', 'grok', 'qwen'],
+  ui_designer: ['gemini', 'claude', 'openai', 'deepseek', 'grok', 'qwen'],
+};
+
+/**
+ * Выбирает лучшую доступную модель для данной роли.
+ * Перебирает провайдеров в порядке приоритета — берёт первый доступный.
+ */
+function resolveModelForRole(role: TeamRole): { provider: ModelProvider; modelId: string } {
+  const available = getAvailableModels().filter(m => m.available);
+  const preferences = ROLE_PROVIDER_PREFERENCES[role];
+
+  for (const preferredProvider of preferences) {
+    const model = available.find(m => m.provider === preferredProvider);
+    if (model) {
+      return { provider: model.provider, modelId: model.apiModel };
+    }
+  }
+
+  // Крайний fallback — первая доступная модель
+  if (available.length > 0) {
+    return { provider: available[0].provider, modelId: available[0].apiModel };
+  }
+
+  // Нет доступных моделей — вернём Claude как заглушку (ошибка будет на этапе вызова)
+  return { provider: 'claude', modelId: 'claude-sonnet-4-5-20251101' };
+}
+
 // Names pool for dynamic member creation
 const NAMES_POOL = {
   male: ['Dmitry', 'Pavel', 'Andrey', 'Kirill', 'Artem', 'Nikita', 'Roman', 'Vlad', 'Boris', 'Yuri'],
@@ -291,8 +333,13 @@ export class TeamManager {
     const template = MEMBER_TEMPLATES[templateKey];
     if (!template) throw new Error(`Unknown member template: ${templateKey}`);
 
+    // Динамически выбираем лучшую доступную модель для роли
+    const resolved = resolveModelForRole(template.role);
+
     return {
       ...template,
+      provider: resolved.provider,
+      modelId: resolved.modelId,
       id: `member-${Date.now()}-${Math.random().toString(36).slice(2)}`,
       status: 'idle',
       workload: 0,
@@ -318,22 +365,31 @@ export class TeamManager {
     estimatedTeamSize: number;
   }> {
     const projectsContext = getTeamProjectsContext();
+    // Динамически формируем список доступных провайдеров для Алекса
+    const availModels = getAvailableModels().filter(m => m.available);
+    const availProviders = [...new Set(availModels.map(m => m.provider))];
+    const providersList = availProviders.length > 0
+      ? `Доступные AI-провайдеры: ${availProviders.join(', ')} (${availModels.length} моделей)`
+      : 'Доступен только Claude';
+
     const systemPrompt = `Ты — Алекс, ведущий архитектор и тимлид AI-команды разработки Chimera.
 ${ROLE_INSTRUCTIONS.lead_architect}
 
-## Твоя команда:
-- Max (💻 senior_developer, OpenAI) — сложный код, алгоритмы, оптимизация
-- Kate (👩‍💻 senior_developer, Claude) — код, рефакторинг, best practices
-- Dasha (⚡ junior_developer, Claude) — быстрые задачи, утилиты
-- Tim (🚀 junior_developer, OpenAI) — скрипты, автоматизация
-- Lena (🔍 qa_engineer, Gemini) — тестирование, edge cases
-- Mike (🧪 qa_engineer, OpenAI) — тестирование безопасности
-- Ivan (🔬 research_engineer, DeepSeek) — глубокий анализ
-- Sergey (📚 research_engineer, OpenAI) — сложное рассуждение
-- Nick (🛠️ devops_engineer, Claude) — DevOps, CI/CD
-- Anna (🔒 security_specialist, OpenAI) — безопасность
-- Viktor (⚡ performance_engineer, DeepSeek) — производительность
-- Elena (📝 technical_writer, Claude) — документация
+## ${providersList}
+
+## Твоя команда (модели назначаются автоматически из доступных):
+- Max (💻 senior_developer) — сложный код, алгоритмы, оптимизация
+- Kate (👩‍💻 senior_developer) — код, рефакторинг, best practices
+- Dasha (⚡ junior_developer) — быстрые задачи, утилиты
+- Tim (🚀 junior_developer) — скрипты, автоматизация
+- Lena (🔍 qa_engineer) — тестирование, edge cases
+- Mike (🧪 qa_engineer) — тестирование безопасности
+- Ivan (🔬 research_engineer) — глубокий анализ
+- Sergey (📚 research_engineer) — сложное рассуждение
+- Nick (🛠️ devops_engineer) — DevOps, CI/CD
+- Anna (🔒 security_specialist) — безопасность
+- Viktor (⚡ performance_engineer) — производительность
+- Elena (📝 technical_writer) — документация
 ${projectsContext}
 
 ## Правила:
@@ -354,10 +410,11 @@ ${projectsContext}
   "reasoning": "Почему такой состав команды (1 предложение)"
 }`;
 
+    // Алекс использует свою модель (динамически подобранную)
     const response = await generateWithModel(
-      'claude',
-      'claude-opus-4-5-20251101',
-      `Analyze this request and plan the team:\n\n${userRequest}`,
+      this.lead.provider,
+      this.lead.modelId,
+      `Проанализируй запрос и спланируй работу команды:\n\n${userRequest}`,
       systemPrompt
     );
 
@@ -442,21 +499,8 @@ ${projectsContext}
       ui_designer: '🎨',
     };
 
-    // Pick best available model for role
-    const roleModels: Record<TeamRole, { provider: ModelProvider; modelId: string }> = {
-      lead_architect: { provider: 'claude', modelId: 'claude-opus-4-5-20251101' },
-      senior_developer: { provider: 'openai', modelId: 'gpt-5.2' },
-      junior_developer: { provider: 'claude', modelId: 'claude-sonnet-4-5-20251101' },
-      qa_engineer: { provider: 'gemini', modelId: 'gemini-3-pro' },
-      research_engineer: { provider: 'deepseek', modelId: 'deepseek-r1' },
-      devops_engineer: { provider: 'claude', modelId: 'claude-sonnet-4-5-20251101' },
-      security_specialist: { provider: 'openai', modelId: 'gpt-5.2-pro' },
-      performance_engineer: { provider: 'deepseek', modelId: 'deepseek-r1' },
-      technical_writer: { provider: 'claude', modelId: 'claude-sonnet-4-5-20251101' },
-      ui_designer: { provider: 'gemini', modelId: 'gemini-3-pro' },
-    };
-
-    const modelConfig = roleModels[role];
+    // Динамически выбираем лучшую доступную модель для роли
+    const modelConfig = resolveModelForRole(role);
 
     return {
       id: `member-${Date.now()}-${Math.random().toString(36).slice(2)}`,
@@ -503,7 +547,7 @@ ${projectsContext}
     return bestMatch;
   }
 
-  // Execute task with assigned member
+  // Execute task with assigned member (with fallback and error handling)
   async executeTask(task: TeamTask, member: TeamMember): Promise<string> {
     const roleInstructions = ROLE_INSTRUCTIONS[member.role] || '';
     const projectsContext = getTeamProjectsContext();
@@ -523,22 +567,53 @@ ${projectsContext}
 - Если задача связана с проектом — учитывай его контекст
 - Отвечай на языке пользователя (по умолчанию русский)`;
 
-    const response = await generateWithModel(
+    // Попытка 1: основной провайдер члена команды
+    let response = await generateWithModel(
       member.provider,
       member.modelId,
       task.description,
       systemPrompt
     );
 
+    // Если основной провайдер вернул ошибку — пробуем fallback
+    if (response.status === 'error' || !response.content) {
+      console.log(`[Team] ${member.name} (${member.provider}) failed: ${response.error || 'empty'}. Trying fallback...`);
+
+      // Получаем другую доступную модель
+      const available = getAvailableModels().filter(
+        m => m.available && m.provider !== member.provider
+      );
+      const fallbackModel = available[0];
+
+      if (fallbackModel) {
+        console.log(`[Team] Fallback: ${member.name} → ${fallbackModel.provider}/${fallbackModel.apiModel}`);
+        response = await generateWithModel(
+          fallbackModel.provider,
+          fallbackModel.apiModel,
+          task.description,
+          systemPrompt
+        );
+
+        // Обновляем провайдер на успешный для будущих задач
+        if (response.status === 'completed' && response.content) {
+          member.provider = fallbackModel.provider;
+          member.modelId = fallbackModel.apiModel;
+        }
+      }
+    }
+
+    // Если всё равно пусто — записываем информацию об ошибке
+    const resultContent = response.content || `[${member.name}] Не удалось получить ответ (${response.error || 'модель недоступна'})`;
+
     // Update member status
     member.status = 'complete';
     member.currentTask = undefined;
     member.workload = Math.max(0, member.workload - 30);
     task.status = 'complete';
-    task.result = response.content;
+    task.result = resultContent;
     task.completedAt = new Date();
 
-    return response.content;
+    return resultContent;
   }
 
   // Get current team state

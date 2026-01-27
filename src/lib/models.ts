@@ -122,6 +122,8 @@ function formatErrorMessage(provider: ModelProvider, error: Error): string {
 }
 
 // Model configurations - Updated January 2026
+// NOTE: `available` is computed dynamically by getAvailableModels() based on env API keys.
+// Do NOT set static `available` values here — all are treated as potentially available.
 export const MODELS: ModelConfig[] = [
   // Claude models (Anthropic)
   {
@@ -130,7 +132,7 @@ export const MODELS: ModelConfig[] = [
     name: 'Claude Opus 4.5',
     apiModel: 'claude-opus-4-5-20251101',
     strengths: ['code', 'architecture', 'review', 'complex_reasoning', 'writing'],
-    available: true,
+    available: false, // dynamic — set by getAvailableModels()
   },
   {
     id: 'claude-sonnet-4.5',
@@ -138,7 +140,7 @@ export const MODELS: ModelConfig[] = [
     name: 'Claude Sonnet 4.5',
     apiModel: 'claude-sonnet-4-5-20251101',
     strengths: ['fast_code', 'general', 'code', 'agentic'],
-    available: true,
+    available: false,
   },
   // OpenAI models
   {
@@ -147,7 +149,7 @@ export const MODELS: ModelConfig[] = [
     name: 'GPT-5.2',
     apiModel: 'gpt-5.2',
     strengths: ['complex_reasoning', 'math', 'code', 'architecture'],
-    available: true,
+    available: false,
   },
   {
     id: 'gpt-5.2-pro',
@@ -155,7 +157,7 @@ export const MODELS: ModelConfig[] = [
     name: 'GPT-5.2 Pro',
     apiModel: 'gpt-5.2-pro',
     strengths: ['complex_reasoning', 'math', 'code', 'planning', 'architecture'],
-    available: true,
+    available: false,
   },
   {
     id: 'o3',
@@ -163,7 +165,7 @@ export const MODELS: ModelConfig[] = [
     name: 'o3 (Reasoning)',
     apiModel: 'o3',
     strengths: ['complex_reasoning', 'math', 'code', 'planning'],
-    available: true,
+    available: false,
   },
   {
     id: 'o4-mini',
@@ -171,31 +173,23 @@ export const MODELS: ModelConfig[] = [
     name: 'o4-mini (Fast Reasoning)',
     apiModel: 'o4-mini',
     strengths: ['fast', 'reasoning', 'code'],
-    available: true,
+    available: false,
   },
   // Google Gemini models
   {
-    id: 'gemini-3-pro',
+    id: 'gemini-2.5-pro',
     provider: 'gemini',
-    name: 'Gemini 3 Pro',
-    apiModel: 'gemini-3-pro',
+    name: 'Gemini 2.5 Pro',
+    apiModel: 'gemini-2.5-pro-preview-05-06',
     strengths: ['fast', 'multimodal', 'long_context', 'code', 'reasoning'],
     available: false,
   },
   {
-    id: 'gemini-3-flash',
+    id: 'gemini-2.5-flash',
     provider: 'gemini',
-    name: 'Gemini 3 Flash',
-    apiModel: 'gemini-3-flash',
+    name: 'Gemini 2.5 Flash',
+    apiModel: 'gemini-2.5-flash-preview-05-20',
     strengths: ['fast', 'multimodal', 'value'],
-    available: false,
-  },
-  {
-    id: 'gemini-2.5-deep-think',
-    provider: 'gemini',
-    name: 'Gemini 2.5 Deep Think',
-    apiModel: 'gemini-2.5-deep-think',
-    strengths: ['complex_reasoning', 'math', 'planning'],
     available: false,
   },
   // Qwen models (Alibaba)
@@ -217,18 +211,18 @@ export const MODELS: ModelConfig[] = [
   },
   // xAI Grok models
   {
-    id: 'grok-4.1',
+    id: 'grok-3',
     provider: 'grok',
-    name: 'Grok 4.1',
-    apiModel: 'grok-4-1',
+    name: 'Grok 3',
+    apiModel: 'grok-3',
     strengths: ['reasoning', 'code', 'agentic', 'tool_use'],
     available: false,
   },
   {
-    id: 'grok-4.1-fast',
+    id: 'grok-3-fast',
     provider: 'grok',
-    name: 'Grok 4.1 Fast',
-    apiModel: 'grok-4-1-fast',
+    name: 'Grok 3 Fast',
+    apiModel: 'grok-3-fast',
     strengths: ['fast', 'agentic', 'tool_use'],
     available: false,
   },
@@ -237,8 +231,16 @@ export const MODELS: ModelConfig[] = [
     id: 'deepseek-r1',
     provider: 'deepseek',
     name: 'DeepSeek R1',
-    apiModel: 'deepseek-r1',
+    apiModel: 'deepseek-reasoner',
     strengths: ['reasoning', 'math', 'code', 'open_source'],
+    available: false,
+  },
+  {
+    id: 'deepseek-chat',
+    provider: 'deepseek',
+    name: 'DeepSeek V3',
+    apiModel: 'deepseek-chat',
+    strengths: ['code', 'fast_code', 'general'],
     available: false,
   },
 ];
@@ -520,10 +522,14 @@ export async function generateWithFallback(
 }
 
 // Get best model for task type
+// IMPORTANT: always pass getAvailableModels().filter(m => m.available) or use default
 export function getBestModelForTask(
   taskType: string,
-  availableModels: ModelConfig[] = MODELS.filter(m => m.available)
+  availableModels?: ModelConfig[]
 ): ModelConfig | null {
+  // Always use dynamic availability check, never static MODELS array
+  const models = availableModels ?? getAvailableModels().filter(m => m.available);
+  if (models.length === 0) return null;
   const taskStrengthMap: Record<string, string[]> = {
     code: ['code', 'architecture'],
     math: ['math', 'reasoning'],
@@ -539,7 +545,7 @@ export function getBestModelForTask(
   let bestModel: ModelConfig | null = null;
   let bestScore = 0;
 
-  for (const model of availableModels) {
+  for (const model of models) {
     const score = model.strengths.filter(s => requiredStrengths.includes(s)).length;
     if (score > bestScore) {
       bestScore = score;
@@ -547,7 +553,7 @@ export function getBestModelForTask(
     }
   }
 
-  return bestModel || availableModels[0] || null;
+  return bestModel || models[0] || null;
 }
 
 // Get available models
