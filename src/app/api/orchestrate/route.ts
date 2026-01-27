@@ -54,12 +54,19 @@ function getProjectsContext(): string {
   return `\n\n## Проекты пользователя\nВ системе добавлены следующие проекты. Используй эту информацию при ответах:\n\n${projectSummaries}`;
 }
 
-// Strip code blocks from model output — user sees only conclusions
+// Strip code blocks and raw JSON from model output — user sees only conclusions
 function stripCodeBlocks(content: string): string {
   // Удаляем блоки ``` ... ```
-  let cleaned = content.replace(/```[\s\S]*?```/g, '[см. код в результатах анализа]');
+  let cleaned = content.replace(/```[\s\S]*?```/g, '');
   // Удаляем inline code только если длиннее 50 символов (короткие оставляем — имена файлов и т.д.)
-  cleaned = cleaned.replace(/`[^`]{50,}`/g, '[фрагмент кода]');
+  cleaned = cleaned.replace(/`[^`]{50,}`/g, '');
+  // Удаляем сырой JSON (объекты/массивы длиннее 100 символов, не внутри текста)
+  cleaned = cleaned.replace(/\n\s*\{[\s\S]{100,}?\}\s*$/g, '');
+  cleaned = cleaned.replace(/\n\s*\[[\s\S]{100,}?\]\s*$/g, '');
+  // Удаляем tool_use теги если остались
+  cleaned = cleaned.replace(/<tool_use[\s\S]*?<\/tool_use>/g, '');
+  // Чистим множественные пустые строки
+  cleaned = cleaned.replace(/\n{3,}/g, '\n\n');
   return cleaned.trim();
 }
 
@@ -455,25 +462,18 @@ ${toolsDescription}
       })
       .join('\n\n');
 
-    if (hasErrors && iteration < MAX_TOOL_ITERATIONS - 1) {
-      // Errors — feed back to model for recovery
-      currentPrompt = `Исходный запрос пользователя: ${message}\n\nТвой ответ:\n${cleanContent}\n\nРезультаты инструментов:\n${toolResultsText}\n\nНекоторые инструменты вернули ошибки. Попробуй другой подход:\n- Если file_system не нашёл файл — используй github tool с action "get_file" или "list_files"\n- Если github не работает — дай ответ на основе имеющихся данных\nНЕ показывай ошибки пользователю — дай полезный результат.`;
+    if (iteration < MAX_TOOL_ITERATIONS - 1) {
+      // Feed tool results back to model — let it formulate a human answer
+      // NEVER show raw JSON to user — always let model interpret results
+      const errorNote = hasErrors
+        ? '\n\nНекоторые инструменты вернули ошибки. Попробуй другой подход:\n- Если file_system не нашёл файл — используй github tool с action "get_file" или "list_files"\n- Если github не работает — дай ответ на основе имеющихся данных\nНЕ показывай ошибки пользователю — дай полезный результат.'
+        : '\n\nИнструменты вернули данные. Сформулируй ЧЕЛОВЕЧЕСКИЙ ответ на основе полученных данных. НЕ показывай сырой JSON — перескажи результаты простыми словами. Дай конкретные выводы и рекомендации.';
+      currentPrompt = `Исходный запрос пользователя: ${message}\n\nТвой предыдущий ответ:\n${cleanContent}\n\nРезультаты инструментов:\n${toolResultsText}${errorNote}`;
       continue;
     }
 
-    // Format successful results into response (don't show raw JSON to user)
-    const successResults = toolResults.filter(r => r.result.success);
-    if (successResults.length > 0) {
-      const formattedResults = successResults
-        .map(r => {
-          const data = r.result.data;
-          return typeof data === 'object' ? JSON.stringify(data, null, 2) : String(data);
-        })
-        .join('\n\n');
-      finalContent = cleanContent + (formattedResults ? `\n\n${formattedResults}` : '');
-    } else {
-      finalContent = cleanContent || 'Не удалось выполнить запрос. Попробуйте переформулировать задачу.';
-    }
+    // Last iteration — use whatever we have, but strip raw JSON
+    finalContent = cleanContent || 'Не удалось получить ответ от инструментов. Попробуйте переформулировать запрос.';
     break;
   }
 

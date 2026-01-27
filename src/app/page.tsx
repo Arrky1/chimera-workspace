@@ -136,6 +136,16 @@ export default function Home() {
         }),
       });
 
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => 'Unknown error');
+        console.error(`API error ${response.status}:`, errorText);
+        let errorData;
+        try { errorData = JSON.parse(errorText); } catch { errorData = null; }
+        const errorMsg = errorData?.message || errorData?.details || `Сервер вернул ошибку ${response.status}`;
+        addMessage({ role: 'assistant', content: `Ошибка: ${errorMsg}` });
+        return;
+      }
+
       const data = await response.json();
 
       // Mark activity complete
