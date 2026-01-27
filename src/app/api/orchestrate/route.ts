@@ -577,7 +577,7 @@ async function executeSwarmMode(originalMessage: string) {
           fallback.provider,
           fallback.apiModel,
           task.description,
-          `You are ${member.name} (${member.role}). ${task.title}: ${task.description}`
+          `Ты — ${member.name} (${member.role.replace(/_/g, ' ')}). Задача: ${task.title}. ${task.description}. Отвечай КРАТКО.`
         );
         return { taskId: task.id, member: member.name, result: result.content };
       }
@@ -596,19 +596,19 @@ async function executeSwarmMode(originalMessage: string) {
   let synthesis = 'Results compiled from team.';
 
   if (synthesisModel && swarmResults.length > 0) {
-    const synthesisPrompt = `As Lead Architect Alex, synthesize these team results into a coherent response:
+    const synthesisPrompt = `Результаты работы команды:
 
 ${swarmResults.map(r => `**${r.member}:**\n${r.result}`).join('\n\n---\n\n')}
 
-Original request: ${originalMessage}
+Исходный запрос: ${originalMessage}
 
-Provide a unified, well-structured response that combines all findings.`;
+Объедини результаты в один структурированный ответ. Убери дублирования. Выдели главное.`;
 
     const synthesisResponse = await withRetry(() => generateWithModel(
       'claude',
       synthesisModel.apiModel,
       synthesisPrompt,
-      'You are Alex, Lead Architect. Synthesize team results professionally.'
+      'Ты — Алекс, ведущий архитектор команды Chimera. Синтезируй результаты команды КРАТКО и структурированно. Отвечай на русском.'
     ));
 
     synthesis = synthesisResponse.content;

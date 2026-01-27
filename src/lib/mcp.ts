@@ -371,17 +371,10 @@ const webSearchTool: MCPTool = {
     required: ['query'],
   },
   handler: async (params) => {
-    // Placeholder - integrate with actual search API
     const query = params.query as string;
     return {
-      success: true,
-      data: {
-        query,
-        results: [
-          { title: 'Search result placeholder', url: 'https://example.com', snippet: 'Implement actual search...' }
-        ],
-        message: 'Web search requires API integration (Tavily, Brave, etc.)',
-      },
+      success: false,
+      error: `Веб-поиск пока не реализован. Запрос: "${query}". Требуется интеграция с API поиска (Tavily, Brave и т.д.)`,
     };
   },
 };
@@ -545,18 +538,9 @@ const imageGenerationTool: MCPTool = {
   },
   handler: async (params) => {
     const prompt = params.prompt as string;
-    const size = (params.size as string) || '1024x1024';
-
-    // This would call DALL-E API
     return {
-      success: true,
-      data: {
-        prompt,
-        size,
-        message: 'Image generation requires DALL-E API integration',
-        // When implemented:
-        // imageUrl: 'https://...'
-      },
+      success: false,
+      error: `Генерация изображений пока не реализована. Промпт: "${prompt.slice(0, 50)}". Требуется интеграция с DALL-E API`,
     };
   },
 };
@@ -578,16 +562,9 @@ const codeExecutionTool: MCPTool = {
   },
   handler: async (params) => {
     const language = params.language as string;
-    const code = params.code as string;
-
-    // Security: sandboxed execution required
     return {
-      success: true,
-      data: {
-        language,
-        codeLength: code.length,
-        message: 'Code execution requires sandboxed environment (e.g., Docker, VM)',
-      },
+      success: false,
+      error: `Выполнение кода (${language}) пока не реализовано. Требуется sandbox-окружение (Docker, VM)`,
     };
   },
 };
@@ -608,12 +585,10 @@ const databaseTool: MCPTool = {
     },
     required: ['action'],
   },
-  handler: async (params) => {
+  handler: async () => {
     return {
-      success: true,
-      data: {
-        message: 'Database tool requires connection configuration',
-      },
+      success: false,
+      error: 'База данных не подключена. Требуется конфигурация подключения',
     };
   },
 };

@@ -36,7 +36,7 @@ export const securityAnalyzer: Analyzer = {
         for (const match of matches) {
           const line = content.substring(0, match.index).split('\n').length;
           issues.push({
-            id: `sec-${issues.length}`,
+            id: `sec-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
             type: 'security',
             severity: 'critical',
             title: `${name} found in code`,
@@ -55,7 +55,7 @@ export const securityAnalyzer: Analyzer = {
       if (content.match(/\$\{.*\}.*(?:SELECT|INSERT|UPDATE|DELETE|DROP)/gi) ||
           content.match(/`.*\$\{.*\}.*(?:SELECT|INSERT|UPDATE|DELETE|DROP)/gi)) {
         issues.push({
-          id: `sec-${issues.length}`,
+          id: `sec-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
           type: 'security',
           severity: 'critical',
           title: 'Potential SQL Injection',
@@ -71,7 +71,7 @@ export const securityAnalyzer: Analyzer = {
       if (content.includes('dangerouslySetInnerHTML')) {
         const line = content.split('\n').findIndex(l => l.includes('dangerouslySetInnerHTML')) + 1;
         issues.push({
-          id: `sec-${issues.length}`,
+          id: `sec-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
           type: 'security',
           severity: 'high',
           title: 'Potential XSS vulnerability',
@@ -87,7 +87,7 @@ export const securityAnalyzer: Analyzer = {
       // Check for eval usage
       if (content.match(/\beval\s*\(/)) {
         issues.push({
-          id: `sec-${issues.length}`,
+          id: `sec-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
           type: 'security',
           severity: 'high',
           title: 'Dangerous eval() usage',
@@ -120,7 +120,7 @@ export const performanceAnalyzer: Analyzer = {
         for (const match of consoleMatches) {
           const line = content.substring(0, match.index).split('\n').length;
           issues.push({
-            id: `perf-${issues.length}`,
+            id: `perf-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
             type: 'performance',
             severity: 'low',
             title: 'Console statement in production code',
@@ -147,7 +147,7 @@ export const performanceAnalyzer: Analyzer = {
         const componentMatch = content.match(/(?:export\s+)?(?:default\s+)?function\s+(\w+)\s*\([^)]*\)\s*(?::\s*\w+)?\s*\{/);
         if (componentMatch && content.length > 5000 && !content.includes('memo(') && !content.includes('React.memo')) {
           issues.push({
-            id: `perf-${issues.length}`,
+            id: `perf-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
             type: 'performance',
             severity: 'medium',
             title: 'Large component without memoization',
@@ -162,7 +162,7 @@ export const performanceAnalyzer: Analyzer = {
       // Check for synchronous file operations in Node.js
       if (content.match(/\breadFileSync\b|\bwriteFileSync\b|\bexistsSync\b/)) {
         issues.push({
-          id: `perf-${issues.length}`,
+          id: `perf-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
           type: 'performance',
           severity: 'medium',
           title: 'Synchronous file operations',
@@ -177,7 +177,7 @@ export const performanceAnalyzer: Analyzer = {
       if (content.match(/\.findOne\(|\.find\(|\.save\(|\.create\(/) &&
           !content.includes('await') && !content.includes('.then(')) {
         issues.push({
-          id: `perf-${issues.length}`,
+          id: `perf-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
           type: 'performance',
           severity: 'high',
           title: 'Potentially unhandled async database operation',
@@ -208,7 +208,7 @@ export const codeQualityAnalyzer: Analyzer = {
       // Check for very long files
       if (lines.length > 500) {
         issues.push({
-          id: `qual-${issues.length}`,
+          id: `qual-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
           type: 'code_quality',
           severity: 'medium',
           title: 'File too long',
@@ -223,7 +223,7 @@ export const codeQualityAnalyzer: Analyzer = {
       const longLines = lines.filter(l => l.length > 120);
       if (longLines.length > 10) {
         issues.push({
-          id: `qual-${issues.length}`,
+          id: `qual-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
           type: 'code_quality',
           severity: 'low',
           title: 'Many long lines',
@@ -239,7 +239,7 @@ export const codeQualityAnalyzer: Analyzer = {
       for (const match of todoMatches) {
         const line = content.substring(0, match.index).split('\n').length;
         issues.push({
-          id: `qual-${issues.length}`,
+          id: `qual-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
           type: 'code_quality',
           severity: 'info',
           title: `${match[1].toUpperCase()} comment found`,
@@ -258,7 +258,7 @@ export const codeQualityAnalyzer: Analyzer = {
       );
       if (duplicates.length > 0) {
         issues.push({
-          id: `qual-${issues.length}`,
+          id: `qual-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
           type: 'code_quality',
           severity: 'medium',
           title: 'Potential code duplication',
@@ -279,7 +279,7 @@ export const codeQualityAnalyzer: Analyzer = {
       }
       if (maxNesting > 5) {
         issues.push({
-          id: `qual-${issues.length}`,
+          id: `qual-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
           type: 'code_quality',
           severity: 'medium',
           title: 'Deeply nested code',
@@ -297,7 +297,7 @@ export const codeQualityAnalyzer: Analyzer = {
         for (const _ of anyMatches) anyCount++;
         if (anyCount > 3) {
           issues.push({
-            id: `qual-${issues.length}`,
+            id: `qual-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
             type: 'code_quality',
             severity: 'medium',
             title: 'Excessive use of "any" type',

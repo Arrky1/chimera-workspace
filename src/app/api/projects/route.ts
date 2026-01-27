@@ -36,17 +36,37 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const { action } = body;
 
+    if (!action || typeof action !== 'string') {
+      return NextResponse.json({ error: 'action is required (string)' }, { status: 400 });
+    }
+
     switch (action) {
-      case 'add':
+      case 'add': {
+        if (!body.githubUrl || typeof body.githubUrl !== 'string') {
+          return NextResponse.json({ error: 'githubUrl is required (string)' }, { status: 400 });
+        }
         return addProject(body.githubUrl);
-      case 'analyze':
+      }
+      case 'analyze': {
+        if (!body.projectId || typeof body.projectId !== 'string') {
+          return NextResponse.json({ error: 'projectId is required (string)' }, { status: 400 });
+        }
         return analyzeProject(body.projectId);
-      case 'fix':
+      }
+      case 'fix': {
+        if (!body.projectId || !body.issueIds || !Array.isArray(body.issueIds)) {
+          return NextResponse.json({ error: 'projectId and issueIds[] required' }, { status: 400 });
+        }
         return fixIssues(body as FixRequest);
-      case 'remove':
+      }
+      case 'remove': {
+        if (!body.projectId || typeof body.projectId !== 'string') {
+          return NextResponse.json({ error: 'projectId is required (string)' }, { status: 400 });
+        }
         return removeProject(body.projectId);
+      }
       default:
-        return NextResponse.json({ error: 'Unknown action' }, { status: 400 });
+        return NextResponse.json({ error: `Unknown action: ${action}` }, { status: 400 });
     }
   } catch (error) {
     console.error('Projects API error:', error);
@@ -110,6 +130,8 @@ async function cloneAndAnalyze(project: Project) {
   try {
     project.status = 'cloning';
     project.updatedAt = new Date();
+    setProject(project.id, project);
+    console.log(`[Projects] Cloning ${project.owner}/${project.repo}...`);
 
     const cloneResult = await cloneRepo(project.githubUrl, token);
 
@@ -117,11 +139,15 @@ async function cloneAndAnalyze(project: Project) {
       project.status = 'error';
       project.error = cloneResult.error;
       project.updatedAt = new Date();
+      setProject(project.id, project);
+      console.error(`[Projects] Clone failed for ${project.owner}/${project.repo}: ${cloneResult.error}`);
       return;
     }
 
     project.status = 'analyzing';
     project.updatedAt = new Date();
+    setProject(project.id, project);
+    console.log(`[Projects] Analyzing ${project.owner}/${project.repo}...`);
 
     const projectInfo = await scanProject(cloneResult.localPath);
     const issues = await runAnalysis(projectInfo, ['security', 'performance', 'code_quality', 'architecture']);
@@ -195,11 +221,15 @@ async function cloneAndAnalyze(project: Project) {
     project.issuesCount = projectIssues.length;
     project.lastAnalysis = new Date();
     project.updatedAt = new Date();
+    setProject(project.id, project);
+    console.log(`[Projects] Analysis complete for ${project.owner}/${project.repo}: ${projectIssues.length} issues, health ${summary.healthScore}`);
 
   } catch (error) {
     project.status = 'error';
     project.error = error instanceof Error ? error.message : 'Analysis failed';
     project.updatedAt = new Date();
+    setProject(project.id, project);
+    console.error(`[Projects] Analysis error for ${project.owner}/${project.repo}:`, error);
   }
 }
 

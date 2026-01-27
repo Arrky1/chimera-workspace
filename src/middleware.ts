@@ -13,7 +13,7 @@ async function generateAuthToken(password: string): Promise<string> {
 
 export async function middleware(request: NextRequest) {
   // Skip auth for health check endpoints
-  const healthPaths = ['/api/health', '/api/healthz', '/api/orchestrate'];
+  const healthPaths = ['/api/health', '/api/healthz'];
   if (healthPaths.some(p => request.nextUrl.pathname === p) && request.method === 'GET') {
     return NextResponse.next();
   }
@@ -33,10 +33,13 @@ export async function middleware(request: NextRequest) {
     }
   }
 
-  // Check for auth header (for API calls)
-  const authHeader = request.headers.get('x-auth-password');
-  if (authHeader === authPassword) {
-    return NextResponse.next();
+  // Check for auth header (for API calls — accepts HMAC token, not plaintext password)
+  const authHeader = request.headers.get('x-auth-token');
+  if (authHeader) {
+    const expectedToken = await generateAuthToken(authPassword);
+    if (authHeader === expectedToken) {
+      return NextResponse.next();
+    }
   }
 
   // For API routes, return 401 JSON instead of redirect
