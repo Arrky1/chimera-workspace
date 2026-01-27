@@ -27,8 +27,9 @@ import {
   updateTaskNode,
 } from '@/lib/chat-store';
 import type { TaskNode } from '@/lib/chat-store';
-import { getAllProjects, getProjectContextSummary, hasProject } from '@/lib/project-store';
-import { parseGitHubUrl } from '@/lib/github';
+import { getAllProjects, getProjectContextSummary, hasProject, setProject } from '@/lib/project-store';
+import { parseGitHubUrl, getRepoInfo } from '@/lib/github';
+import type { Project } from '@/types/project';
 import {
   createExecution,
   getExecution,
@@ -257,6 +258,7 @@ async function autoDetectGitHubLinks(message: string): Promise<string[]> {
   if (!matches) return [];
 
   const added: string[] = [];
+  const token = process.env.GITHUB_TOKEN;
 
   for (const rawUrl of [...new Set(matches)]) {
     const url = rawUrl.startsWith('http') ? rawUrl : `https://${rawUrl}`;
@@ -265,33 +267,38 @@ async function autoDetectGitHubLinks(message: string): Promise<string[]> {
 
     // Skip if already added
     if (hasProject(parsed.url)) {
-      console.log(`[AutoDetect] Project ${parsed.fullName} already added`);
+      console.log(`[AutoDetect] Project ${parsed.fullName} already added, skipping`);
       continue;
     }
 
-    // Add project via internal API call (handles cloning + analysis)
+    // Validate repo exists via GitHub API
     try {
-      const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || process.env.RAILWAY_PUBLIC_DOMAIN
-        ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`
-        : 'http://localhost:3000';
-      const res = await fetch(`${baseUrl}/api/projects`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'add', githubUrl: url }),
-      });
-
-      if (res.ok) {
-        added.push(`${parsed.owner}/${parsed.name}`);
-        console.log(`[AutoDetect] Auto-added project: ${parsed.fullName}`);
-      } else {
-        const err = await res.json().catch(() => ({}));
-        // Already added is not an error
-        if (err.projectId) {
-          console.log(`[AutoDetect] Project ${parsed.fullName} was already added`);
-        } else {
-          console.log(`[AutoDetect] Failed to add ${parsed.fullName}: ${err.error || res.status}`);
-        }
+      const repoInfo = await getRepoInfo(url, token);
+      if (!repoInfo) {
+        console.log(`[AutoDetect] Cannot access ${parsed.fullName}`);
+        continue;
       }
+
+      // Add project directly to store
+      const projectId = `proj-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const project: Project = {
+        id: projectId,
+        name: repoInfo.name,
+        description: repoInfo.description,
+        githubUrl: parsed.url,
+        owner: parsed.owner,
+        repo: parsed.name,
+        isPrivate: repoInfo.isPrivate,
+        language: repoInfo.language,
+        defaultBranch: repoInfo.defaultBranch,
+        status: 'ready',  // Skip cloning — model uses GitHub API tools directly
+        addedAt: new Date(),
+        updatedAt: new Date(),
+      };
+
+      setProject(projectId, project);
+      added.push(`${parsed.owner}/${parsed.name}`);
+      console.log(`[AutoDetect] Auto-added project: ${parsed.fullName} (id: ${projectId})`);
     } catch (e) {
       console.log(`[AutoDetect] Error adding ${parsed.fullName}: ${e}`);
     }
