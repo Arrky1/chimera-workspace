@@ -7,10 +7,14 @@ interface ChatInputProps {
   onSubmit: (message: string, attachments?: File[]) => void;
   isProcessing: boolean;
   placeholder?: string;
+  value?: string;
+  onChange?: (value: string) => void;
 }
 
-export function ChatInput({ onSubmit, isProcessing, placeholder }: ChatInputProps) {
-  const [input, setInput] = useState('');
+export function ChatInput({ onSubmit, isProcessing, placeholder, value, onChange }: ChatInputProps) {
+  const [localInput, setLocalInput] = useState('');
+  const input = value !== undefined ? value : localInput;
+  const setInput = onChange || setLocalInput;
   const [attachments, setAttachments] = useState<File[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);

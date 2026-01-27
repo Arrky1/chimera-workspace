@@ -1,5 +1,6 @@
 'use client';
 
+import { useEffect, useRef } from 'react';
 import { Message } from '@/types';
 import { User, Bot, Image as ImageIcon, FileText } from 'lucide-react';
 import { ClarificationDialog } from './ClarificationDialog';
@@ -11,6 +12,13 @@ interface MessageListProps {
 }
 
 export function MessageList({ messages, onClarificationAnswer }: MessageListProps) {
+  const bottomRef = useRef<HTMLDivElement>(null);
+
+  // Auto-scroll to bottom when messages change
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
+
   return (
     <div className="flex-1 overflow-y-auto p-4 space-y-4">
       {messages.length === 0 && (
@@ -85,7 +93,9 @@ export function MessageList({ messages, onClarificationAnswer }: MessageListProp
             )}
 
             {/* Message content */}
-            <div className="whitespace-pre-wrap">{message.content}</div>
+            {message.content && (
+              <div className="whitespace-pre-wrap">{message.content}</div>
+            )}
 
             {/* Clarification dialog */}
             {message.clarification && onClarificationAnswer && (
@@ -99,7 +109,7 @@ export function MessageList({ messages, onClarificationAnswer }: MessageListProp
 
             {/* Execution plan status */}
             {message.executionPlan && (
-              <div className="mt-3">
+              <div className={message.content ? 'mt-3' : ''}>
                 <ExecutionStatus plan={message.executionPlan} />
               </div>
             )}
@@ -143,6 +153,9 @@ export function MessageList({ messages, onClarificationAnswer }: MessageListProp
           )}
         </div>
       ))}
+
+      {/* Scroll anchor */}
+      <div ref={bottomRef} />
     </div>
   );
 }

@@ -373,9 +373,24 @@ ${toolsDescription}
 - Альтернатива: file_system с путём owner/repo/path
 - Если один способ не работает — сразу пробуй другой
 
+## Стиль общения
+Ты общаешься как живой коллега-разработчик, а не робот. Твои ответы должны быть:
+
+1. **Информативными** — чётко объясни что ты сделал / нашёл / проанализировал
+2. **Со статусом** — если задача выполнена, скажи об этом. Если что-то не удалось — объясни почему
+3. **С предложением следующих шагов** — в конце ВСЕГДА предложи 2-3 конкретных действия, которые можно сделать дальше. Формат:
+
+   **Что можно сделать дальше:**
+   • [конкретное действие 1]
+   • [конкретное действие 2]
+   • [конкретное действие 3]
+
+4. **Проактивными** — если видишь проблему — сообщи. Если есть лучший подход — предложи
+5. **Конкретными** — называй файлы, строки, функции, ошибки. Без воды
+
 ## Инструкции
 - У тебя ЕСТЬ контекст диалога выше. Когда пользователь ссылается на "тот текст", "предыдущий ответ", "результат" — ищи в истории диалога
-- Отвечай КРАТКО и по делу. Максимум 300 слов
+- Отвечай КРАТКО и по делу. Максимум 400 слов
 - ЗАПРЕЩЕНО выдавать блоки кода. НИКАКОГО кода. Без тройных бэктиков
 - Отвечай ТОЛЬКО текстом: заключения, выводы, рекомендации простыми словами
 - Если нужно описать код — объясни словами что он делает, не показывай сам код
@@ -587,18 +602,25 @@ async function handlePlanExecution(plan: ExecutionPlan, idempotencyKey?: string,
 
   plan.status = 'completed';
 
-  // Save execution result to chat history
-  const resultSummary = results.map(r => {
-    const output = typeof r.result === 'object' && r.result !== null
-      ? (r.result as { synthesis?: string; output?: string }).synthesis || (r.result as { output?: string }).output || 'Выполнено'
-      : String(r.result);
-    // Trim long results for history
-    return `[${r.phase}]: ${output.slice(0, 300)}`;
-  }).join('\n');
-  addChatMessage({ role: 'assistant', content: resultSummary, timestamp: Date.now() }, session);
+  // Build a human-readable summary message for the user
+  const resultParts = results.map(r => {
+    const res = r.result as { synthesis?: string; output?: string; tasks?: unknown[]; error?: string } | null;
+    if (!res) return '';
+    if (res.error) return `**${r.phase}:** Ошибка — ${res.error}`;
+    const text = res.synthesis || res.output || '';
+    return text ? `**${r.phase}:**\n${stripCodeBlocks(typeof text === 'string' ? text : JSON.stringify(text)).slice(0, 500)}` : '';
+  }).filter(Boolean).join('\n\n');
+
+  const summaryMessage = resultParts
+    ? `Готово! Вот результаты:\n\n${resultParts}`
+    : 'Выполнение завершено.';
+
+  // Save to chat history
+  addChatMessage({ role: 'assistant', content: summaryMessage, timestamp: Date.now() }, session);
 
   return NextResponse.json({
     type: 'execution_complete',
+    message: summaryMessage,
     plan,
     results,
     executionId,
@@ -612,9 +634,16 @@ async function executeSingleMode(task: string, provider: ModelProvider) {
   const singleSystemPrompt = `Ты — Chimera AI, эксперт по разработке. Выполни задачу полностью и конкретно.${projectsContext}
 
 Отвечай на том языке, на котором написана задача.
-Будь КРАТКИМ — максимум 300 слов.
+Будь КРАТКИМ — максимум 400 слов.
 ЗАПРЕЩЕНО выдавать блоки кода. Отвечай ТОЛЬКО текстом — заключения, выводы, рекомендации простыми словами.
-Если нужно описать код — объясни словами, не показывай код.`;
+Если нужно описать код — объясни словами, не показывай код.
+
+## Стиль общения
+Общайся как живой коллега. В конце ответа ВСЕГДА предложи 2-3 следующих шага:
+
+**Что можно сделать дальше:**
+• [действие 1]
+• [действие 2]`;
 
   if (!model) {
     // Fallback to any available model
@@ -717,12 +746,18 @@ ${trimmedResults}
 
 Исходный запрос: ${originalMessage}
 
-ЗАДАЧА: Дай КРАТКИЙ структурированный ИТОГ.
-- Максимум 300 слов
+ЗАДАЧА: Дай КРАТКИЙ структурированный ИТОГ как живой коллега.
+- Максимум 400 слов
 - НЕ повторяй код из результатов — только выводы и рекомендации
 - Если есть проблемы — таблица: приоритет | проблема | решение
 - План действий — нумерованный список
-- НЕ генерируй новый код — только ссылайся на результаты команды`;
+- НЕ генерируй новый код — только ссылайся на результаты команды
+- В конце ОБЯЗАТЕЛЬНО предложи 2-3 следующих шага:
+
+**Что можно сделать дальше:**
+• [действие 1]
+• [действие 2]
+• [действие 3]`;
 
     const synthesisResponse = await withRetry(() => generateWithModel(
       lead.provider,

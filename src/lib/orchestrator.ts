@@ -149,13 +149,19 @@ export function classifyTask(intent: ParsedIntent, input: string): {
   const isMultiPart = /несколько|multiple|добавь.*и.*и|create.*and.*and|а также|а ещё|а еще|кроме того|плюс|и ещё|и еще/i.test(lowerInput);
 
   // Detect analysis/review tasks (benefit from multiple perspectives)
-  const isAnalysisTask = /анализ|ревизи|review|проверь|оцени|сравни|compare|audit|аудит|оптимиз|optimize/i.test(lowerInput);
+  const isAnalysisTask = /анализ|ревизи|review|проверь|оцени|сравни|compare|audit|аудит|оптимиз|optimize|безопасност|security|тестиров|testing|качеств|quality/i.test(lowerInput);
 
   // Detect coding tasks that benefit from team
-  const isCodingTask = /напиши|создай|реализуй|implement|write|build|сделай|разработай|develop|добавь функци|add feature/i.test(lowerInput);
+  const isCodingTask = /напиши|создай|реализуй|implement|write|build|сделай|разработай|develop|добавь функци|add feature|запрограммируй|закодь/i.test(lowerInput);
 
   // Detect research tasks
-  const isResearchTask = /исследуй|research|найди.*способ|find.*way|предложи.*вариант|suggest|объясни.*как|explain.*how/i.test(lowerInput);
+  const isResearchTask = /исследуй|research|найди.*способ|find.*way|предложи.*вариант|suggest|объясни.*как|explain.*how|лучший.*способ|best.*practice/i.test(lowerInput);
+
+  // Detect planning / strategy tasks
+  const isPlanningTask = /план|стратеги|roadmap|дорожн|приоритет|priorit|по.*пунктам|step.*by.*step|пошагов/i.test(lowerInput);
+
+  // Detect discussion / brainstorm tasks
+  const isDiscussionTask = /обсуд|discuss|мнение|opinion|как.*думаешь|what.*think|давай.*подумаем|brainstorm|дебат|debate/i.test(lowerInput);
 
   // Estimate complexity based on multiple signals
   let complexity: 'simple' | 'medium' | 'complex' = 'simple';
@@ -170,15 +176,21 @@ export function classifyTask(intent: ParsedIntent, input: string): {
   } else if (intent.scope === 'full') {
     complexity = 'medium';
     estimatedSubtasks = 4;
-  } else if (isAnalysisTask && inputLength > 50) {
-    // Нетривиальные аналитические запросы → средняя сложность (команда)
+  } else if (isAnalysisTask && inputLength > 30) {
+    // Аналитические запросы → средняя сложность (команда)
     complexity = 'medium';
     estimatedSubtasks = 3;
-  } else if (isCodingTask && inputLength > 80) {
-    // Развёрнутые задачи по коду → средняя сложность
+  } else if (isCodingTask && inputLength > 50) {
+    // Задачи по коду → средняя сложность
     complexity = 'medium';
     estimatedSubtasks = 3;
   } else if (isResearchTask) {
+    complexity = 'medium';
+    estimatedSubtasks = 2;
+  } else if (isPlanningTask) {
+    complexity = 'medium';
+    estimatedSubtasks = 3;
+  } else if (isDiscussionTask && inputLength > 30) {
     complexity = 'medium';
     estimatedSubtasks = 2;
   }
