@@ -297,10 +297,15 @@ export default function Home() {
       if (data.type === 'execution_complete') {
         updateMessage(messageId, { executionPlan: data.plan });
 
+        // Удаляем блоки кода — пользователь видит только заключения
+        const stripCode = (text: string) =>
+          text.replace(/```[\s\S]*?```/g, '').replace(/`[^`]{50,}`/g, '').trim();
+
         const resultContent = data.results
           .map((r: { phase: string; result: { output?: string; code?: string; synthesis?: string } }) => {
-            const output = r.result?.output || r.result?.code || r.result?.synthesis || 'Completed';
-            return `**${r.phase}:**\n${output}`;
+            const raw = r.result?.synthesis || r.result?.output || r.result?.code || 'Completed';
+            const cleaned = stripCode(typeof raw === 'string' ? raw : JSON.stringify(raw));
+            return `**${r.phase}:**\n${cleaned}`;
           })
           .join('\n\n');
 
