@@ -1,30 +1,7 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
-import ReactFlow, {
-  Node,
-  Edge,
-  Background,
-  Controls,
-  MiniMap,
-  useNodesState,
-  useEdgesState,
-  Position,
-  MarkerType,
-} from 'reactflow';
-import 'reactflow/dist/style.css';
 import { ModelProvider, ExecutionMode } from '@/types';
-import { Brain, Sparkles, Zap, MessageSquare, Users, GitCompare } from 'lucide-react';
-
-// Custom node component
-interface ModelNodeData {
-  label: string;
-  provider: ModelProvider;
-  status: 'idle' | 'active' | 'complete' | 'error';
-  task?: string;
-  progress?: number;
-  tokens?: number;
-}
+import { Brain, Zap, MessageSquare, Users, GitCompare } from 'lucide-react';
 
 const modelColors: Record<ModelProvider, string> = {
   claude: '#f97316',
@@ -33,99 +10,6 @@ const modelColors: Record<ModelProvider, string> = {
   qwen: '#a855f7',
   grok: '#ef4444',
   deepseek: '#06b6d4',
-};
-
-function ModelNode({ data }: { data: ModelNodeData }) {
-  const color = modelColors[data.provider] || '#6b7280';
-  const isActive = data.status === 'active';
-
-  return (
-    <div
-      className={`
-        relative px-4 py-3 rounded-xl border-2 min-w-[140px]
-        transition-all duration-300 backdrop-blur-sm
-        ${isActive ? 'shadow-lg scale-105' : 'shadow-md'}
-      `}
-      style={{
-        borderColor: isActive ? color : `${color}50`,
-        backgroundColor: `${color}15`,
-      }}
-    >
-      {/* Pulse animation for active nodes */}
-      {isActive && (
-        <div
-          className="absolute inset-0 rounded-xl animate-ping opacity-20"
-          style={{ backgroundColor: color }}
-        />
-      )}
-
-      <div className="relative z-10">
-        <div className="flex items-center gap-2 mb-1">
-          <div
-            className="w-3 h-3 rounded-full"
-            style={{ backgroundColor: color }}
-          />
-          <span className="text-sm font-semibold text-white">{data.label}</span>
-        </div>
-
-        {data.task && (
-          <p className="text-xs text-gray-400 truncate max-w-[120px]">
-            {data.task}
-          </p>
-        )}
-
-        {data.progress !== undefined && isActive && (
-          <div className="mt-2 h-1 bg-gray-700 rounded-full overflow-hidden">
-            <div
-              className="h-full transition-all duration-500"
-              style={{
-                width: `${data.progress}%`,
-                backgroundColor: color,
-              }}
-            />
-          </div>
-        )}
-
-        {data.tokens !== undefined && (
-          <p className="text-xs text-gray-500 mt-1">
-            {data.tokens.toLocaleString()} tokens
-          </p>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// Orchestrator node (center)
-function OrchestratorNode({ data }: { data: { mode: ExecutionMode; label: string } }) {
-  const modeIcons: Record<ExecutionMode, typeof Users> = {
-    council: Users,
-    swarm: Zap,
-    deliberation: GitCompare,
-    debate: MessageSquare,
-    single: Brain,
-  };
-
-  const Icon = modeIcons[data.mode] || Users;
-
-  return (
-    <div className="px-6 py-4 rounded-2xl border-2 border-orchestrator-accent bg-orchestrator-accent/20 shadow-xl">
-      <div className="flex items-center gap-3">
-        <div className="p-2 rounded-lg bg-orchestrator-accent/30">
-          <Icon size={24} className="text-orchestrator-accent" />
-        </div>
-        <div>
-          <span className="text-sm font-bold text-white block">{data.label}</span>
-          <span className="text-xs text-orchestrator-accent uppercase">{data.mode}</span>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-const nodeTypes = {
-  model: ModelNode,
-  orchestrator: OrchestratorNode,
 };
 
 interface OrchestrationGraphProps {
@@ -138,143 +22,141 @@ interface OrchestrationGraphProps {
     progress?: number;
     tokens?: number;
   }[];
-  connections?: { from: string; to: string; active?: boolean }[];
 }
 
-export function OrchestrationGraph({ mode, activeModels, connections = [] }: OrchestrationGraphProps) {
-  // Create nodes
-  const createNodes = useCallback((): Node[] => {
-    const nodes: Node[] = [];
-    const centerX = 300;
-    const centerY = 200;
-    const radius = 180;
+export function OrchestrationGraph({ mode, activeModels }: OrchestrationGraphProps) {
+  const modeIcons: Record<ExecutionMode, typeof Users> = {
+    council: Users,
+    swarm: Zap,
+    deliberation: GitCompare,
+    debate: MessageSquare,
+    single: Brain,
+  };
+  const Icon = modeIcons[mode] || Brain;
 
-    // Orchestrator node in center
-    nodes.push({
-      id: 'orchestrator',
-      type: 'orchestrator',
-      position: { x: centerX - 80, y: centerY - 30 },
-      data: { mode, label: 'Chimera' },
-    });
+  const centerX = 300;
+  const centerY = 200;
+  const radius = 150;
 
-    // Model nodes in circle around orchestrator
-    activeModels.forEach((model, index) => {
-      const angle = (2 * Math.PI * index) / activeModels.length - Math.PI / 2;
-      const x = centerX + radius * Math.cos(angle) - 70;
-      const y = centerY + radius * Math.sin(angle) - 30;
-
-      nodes.push({
-        id: model.provider,
-        type: 'model',
-        position: { x, y },
-        data: {
-          label: model.name,
-          provider: model.provider,
-          status: model.status,
-          task: model.task,
-          progress: model.progress,
-          tokens: model.tokens,
-        },
-        sourcePosition: Position.Left,
-        targetPosition: Position.Right,
-      });
-    });
-
-    return nodes;
-  }, [mode, activeModels]);
-
-  // Create edges
-  const createEdges = useCallback((): Edge[] => {
-    const edges: Edge[] = [];
-
-    // Connect all models to orchestrator
-    activeModels.forEach((model) => {
-      const isActive = model.status === 'active';
-      const color = modelColors[model.provider];
-
-      edges.push({
-        id: `${model.provider}-to-orch`,
-        source: model.provider,
-        target: 'orchestrator',
-        animated: isActive,
-        style: {
-          stroke: isActive ? color : `${color}50`,
-          strokeWidth: isActive ? 2 : 1,
-        },
-        markerEnd: {
-          type: MarkerType.ArrowClosed,
-          color: isActive ? color : `${color}50`,
-        },
-      });
-
-      edges.push({
-        id: `orch-to-${model.provider}`,
-        source: 'orchestrator',
-        target: model.provider,
-        animated: isActive,
-        style: {
-          stroke: isActive ? color : `${color}50`,
-          strokeWidth: isActive ? 2 : 1,
-        },
-        markerEnd: {
-          type: MarkerType.ArrowClosed,
-          color: isActive ? color : `${color}50`,
-        },
-      });
-    });
-
-    // Custom connections (e.g., model-to-model in deliberation)
-    connections.forEach((conn) => {
-      edges.push({
-        id: `${conn.from}-${conn.to}`,
-        source: conn.from,
-        target: conn.to,
-        animated: conn.active,
-        style: {
-          stroke: conn.active ? '#6366f1' : '#6366f150',
-          strokeWidth: conn.active ? 2 : 1,
-          strokeDasharray: '5,5',
-        },
-      });
-    });
-
-    return edges;
-  }, [activeModels, connections]);
-
-  const [nodes, setNodes, onNodesChange] = useNodesState(createNodes());
-  const [edges, setEdges, onEdgesChange] = useEdgesState(createEdges());
-
-  // Update nodes/edges when props change
-  useEffect(() => {
-    setNodes(createNodes());
-    setEdges(createEdges());
-  }, [activeModels, mode, connections, createNodes, createEdges, setNodes, setEdges]);
+  // Calculate positions for models in a circle
+  const modelPositions = activeModels.map((model, index) => {
+    const angle = (2 * Math.PI * index) / activeModels.length - Math.PI / 2;
+    return {
+      ...model,
+      x: centerX + radius * Math.cos(angle),
+      y: centerY + radius * Math.sin(angle),
+    };
+  });
 
   return (
-    <div className="h-[400px] w-full rounded-xl border border-orchestrator-border bg-orchestrator-bg overflow-hidden">
-      <ReactFlow
-        nodes={nodes}
-        edges={edges}
-        onNodesChange={onNodesChange}
-        onEdgesChange={onEdgesChange}
-        nodeTypes={nodeTypes}
-        fitView
-        attributionPosition="bottom-left"
-        proOptions={{ hideAttribution: true }}
+    <div className="h-[400px] w-full rounded-xl border border-orchestrator-border bg-orchestrator-bg overflow-hidden relative">
+      <svg width="100%" height="100%" viewBox="0 400" className="absolute inset-0">
+        {/* Connection lines from center to each model */}
+        {modelPositions.map((model) => {
+          const color = modelColors[model.provider] || '#6b7280';
+          const isActive = model.status === 'active';
+          return (
+            <g key={`line-${model.provider}`}>
+              <line
+                x1={centerX}
+                y1={centerY}
+                x2={model.x}
+                y2={model.y}
+                stroke={isActive ? color : `${color}40`}
+                strokeWidth={isActive ? 2 : 1}
+                strokeDasharray={isActive ? '' : '6 4'}
+              />
+              {isActive && (
+                <circle r="3" fill={color}>
+                  <animateMotion
+                    dur="2s"
+                    repeatCount="indefinite"
+                    path={`M${centerX},${centerY} L${model.x},${model.y}`}
+                  />
+                </circle>
+              )}
+            </g>
+          );
+        })}
+      </svg>
+
+      {/* Center orchestrator node */}
+      <div
+        className="absolute transform -translate-x-1/2 -translate-y-1/2"
+        style={{ left: centerX, top: centerY }}
       >
-        <Background color="#1e1e2e" gap={20} />
-        <Controls
-          className="!bg-orchestrator-card !border-orchestrator-border"
-          showInteractive={false}
-        />
-        <MiniMap
-          nodeColor={(node) => {
-            if (node.type === 'orchestrator') return '#6366f1';
-            return modelColors[(node.data as ModelNodeData).provider] || '#6b7280';
-          }}
-          className="!bg-orchestrator-card !border-orchestrator-border"
-        />
-      </ReactFlow>
+        <div className="px-5 py-3 rounded-2xl border-2 border-purple-500 bg-purple-500/20 shadow-lg shadow-purple-500/20">
+          <div className="flex items-center gap-2">
+            <div className="p-1.5 rounded-lg bg-purple-500/30">
+              <Icon size={18} className="text-purple-400" />
+            </div>
+            <div>
+              <span className="text-sm font-bold text-white block">Chimera</span>
+              <span className="text-[10px] text-purple-400 uppercase">{mode}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Model nodes */}
+      {modelPositions.map((model) => {
+        const color = modelColors[model.provider] || '#6b7280';
+        const isActive = model.status === 'active';
+
+        return (
+          <div
+            key={model.provider}
+            className="absolute transform -translate-x-1/2 -translate-y-1/2 transition-all duration-300"
+            style={{
+              left: model.x,
+              top: model.y,
+            }}
+          >
+            <div
+              className={`px-3 py-2 rounded-xl border-2 min-w-[120px] transition-all ${
+                isActive ? 'shadow-lg scale-105' : ''
+              }`}
+              style={{
+                borderColor: isActive ? color : `${color}50`,
+                backgroundColor: `${color}15`,
+              }}
+            >
+              {isActive && (
+                <div
+                  className="absolute inset-0 rounded-xl animate-pulse opacity-20"
+                  style={{ backgroundColor: color }}
+                />
+              )}
+              <div className="relative z-10">
+                <div className="flex items-center gap-2 mb-0.5">
+                  <div
+                    className="w-2.5 h-2.5 rounded-full"
+                    style={{ backgroundColor: color }}
+                  />
+                  <span className="text-xs font-semibold text-white">{model.name}</span>
+                </div>
+                {model.task && (
+                  <p className="text-[10px] text-gray-400 truncate max-w-[100px]">
+                    {model.task}
+                  </p>
+                )}
+                {model.tokens !== undefined && (
+                  <p className="text-[10px] text-gray-500 mt-0.5">
+                    {model.tokens.toLocaleString()} tok
+                  </p>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      })}
+
+      {/* Empty state */}
+      {activeModels.length === 0 && (
+        <div className="absolute inset-0 flex items-center justify-center text-gray-500 text-sm">
+          No active models
+        </div>
+      )}
     </div>
   );
 }
@@ -286,7 +168,7 @@ interface ModelStats {
   tokens: number;
   tasks: number;
   avgTime: number;
-  contribution: number; // percentage
+  contribution: number;
 }
 
 interface StatsProps {
