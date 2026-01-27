@@ -335,6 +335,78 @@ async function proceedWithExecution(
   return handlePlanExecution(plan, idempotencyKey, session);
 }
 
+// ─── Двухэтапная обработка ───────────────────────────────────────────────
+// Этап 1 (work): модель свободно использует инструменты, получает данные,
+//   генерирует код — всё это ВНУТРЕННИЙ рабочий контекст, пользователь не видит
+// Этап 2 (finalize): ОТДЕЛЬНЫЙ вызов модели БЕЗ инструментов — формулирует
+//   чистый человеческий ответ на основе собранного контекста
+// ──────────────────────────────────────────────────────────────────────────
+
+async function finalizeResponse(
+  workContext: string,
+  originalMessage: string,
+  model: { provider: ModelProvider; apiModel: string },
+  session: string = 'main'
+): Promise<string> {
+  const conversationContext = buildConversationContext(session, 5);
+  const projectsContext = getProjectsContext();
+
+  const finalizeSystemPrompt = `Ты — Chimera AI. Твоя задача — сформулировать чистый, понятный ответ пользователю.${projectsContext}
+
+${conversationContext}
+
+## Правила ответа
+- Отвечай на том языке, на котором пишет пользователь
+- МАКСИМУМ 200 слов. Будь МАКСИМАЛЬНО лаконичен
+- Общайся как живой коллега — кратко, по делу, без воды
+- Называй конкретные файлы, функции, проблемы — но КРАТКО
+- НЕ задавай вопросов, если можешь решить сам
+- Задавай ТОЛЬКО один ключевой вопрос, если без ответа НЕВОЗМОЖНО продолжить
+- Сразу действуй и сообщай результат
+
+## СТРОГО ЗАПРЕЩЕНО
+- Блоки кода (\`\`\`)
+- Сырой JSON
+- Показ ошибок инструментов
+- Повторение содержимого файлов дословно
+- Длинные списки (максимум 3-5 пунктов)
+- Многословные объяснения — только суть
+
+## Формат
+Краткий ответ + (если уместно) 2-3 следующих шага:
+
+**Что дальше:**
+• [действие]
+• [действие]`;
+
+  const finalizePrompt = `Запрос пользователя: ${originalMessage}
+
+Собранные данные (внутренний рабочий контекст, НЕ показывай его напрямую):
+---
+${workContext.slice(0, 6000)}
+---
+
+Сформулируй чистый человеческий ответ на основе этих данных.`;
+
+  const response = await withRetry(() => generateWithModel(
+    model.provider,
+    model.apiModel,
+    finalizePrompt,
+    finalizeSystemPrompt
+  ));
+
+  let result = response.content || '';
+
+  // Safety net: strip any remaining code blocks (shouldn't happen with good finalization)
+  result = stripCodeBlocks(result);
+
+  if (!result.trim()) {
+    result = 'Задача обработана, но не удалось сформулировать ответ. Попробуйте переформулировать запрос.';
+  }
+
+  return result;
+}
+
 async function executeSimpleTask(
   message: string,
   intent: Awaited<ReturnType<typeof parseIntent>>,
@@ -357,13 +429,16 @@ async function executeSimpleTask(
   // Start phase tracking
   await startPhase(executionId, plan.phases[0].id);
 
-  // Include available tools, project context, and conversation history in system prompt
+  // ── ЭТАП 1: РАБОЧИЙ (work) ──────────────────────────────────────────
+  // Модель свободно работает с инструментами, код/JSON допустимы
+  // Всё это — внутренний контекст, пользователь его не увидит
+
   const toolsDescription = getToolDescriptions();
   const projectsContext = getProjectsContext();
   const conversationContext = buildConversationContext(session, 10);
   const taskTreeContext = buildTaskTreeContext(session);
 
-  const systemPrompt = `Ты — Chimera AI, мультимодельный ассистент для разработки и анализа кода. Отвечай на том языке, на котором пишет пользователь.${projectsContext}
+  const workSystemPrompt = `Ты — Chimera AI, рабочий агент. Выполни задачу пользователя, используя доступные инструменты.${projectsContext}
 
 ${conversationContext}
 
@@ -380,46 +455,28 @@ ${toolsDescription}
 - Альтернатива: file_system с путём owner/repo/path
 - Если один способ не работает — сразу пробуй другой
 
-## Стиль общения
-Ты общаешься как живой коллега-разработчик, а не робот. Твои ответы должны быть:
-
-1. **Информативными** — чётко объясни что ты сделал / нашёл / проанализировал
-2. **Со статусом** — если задача выполнена, скажи об этом. Если что-то не удалось — объясни почему
-3. **С предложением следующих шагов** — в конце ВСЕГДА предложи 2-3 конкретных действия, которые можно сделать дальше. Формат:
-
-   **Что можно сделать дальше:**
-   • [конкретное действие 1]
-   • [конкретное действие 2]
-   • [конкретное действие 3]
-
-4. **Проактивными** — если видишь проблему — сообщи. Если есть лучший подход — предложи
-5. **Конкретными** — называй файлы, строки, функции, ошибки. Без воды
-
 ## Инструкции
-- У тебя ЕСТЬ контекст диалога выше. Когда пользователь ссылается на "тот текст", "предыдущий ответ", "результат" — ищи в истории диалога
-- Отвечай КРАТКО и по делу. Максимум 400 слов
-- ЗАПРЕЩЕНО выдавать блоки кода. НИКАКОГО кода. Без тройных бэктиков
-- Отвечай ТОЛЬКО текстом: заключения, выводы, рекомендации простыми словами
-- Если нужно описать код — объясни словами что он делает, не показывай сам код
-- Называй файлы, строки, проблемы конкретно
-- НИКОГДА не показывай сырые ошибки инструментов — попробуй другой подход
-- Не задавай лишних вопросов — сразу действуй
-- НИКОГДА не спрашивай "о каком тексте идёт речь" — проверь историю диалога`;
+- Выполняй задачу полностью — используй инструменты для получения данных
+- Если инструмент вернул ошибку — попробуй другой подход
+- Собери ВСЮ нужную информацию и дай ПОЛНЫЙ ответ с деталями
+- Код, JSON, технические детали — МОЖНО, это внутренний контекст
+- У тебя ЕСТЬ контекст диалога. Когда пользователь ссылается на предыдущие ответы — ищи в истории
+- НЕ задавай лишних вопросов — действуй
+- Если данных достаточно — просто дай ответ БЕЗ вызова инструментов`;
 
   const startTime = Date.now();
   let totalLatency = 0;
-
-  // Agentic loop: model calls tools, gets results back, can retry on errors
   const MAX_TOOL_ITERATIONS = 3;
   let currentPrompt = message;
-  let finalContent = '';
+  const workContextParts: string[] = [];
   const allToolsUsed: string[] = [];
+  let usedTools = false;
 
   for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
     const isFollowUp = iteration > 0;
     const iterationSystemPrompt = isFollowUp
-      ? systemPrompt + '\n\n## ВАЖНО: Ты получил результаты инструментов. Если инструмент вернул ошибку — попробуй другой подход (github tool вместо file_system). НЕ показывай пользователю сырые ошибки — исправь ситуацию сам и дай полезный результат.'
-      : systemPrompt;
+      ? workSystemPrompt + '\n\nТы получил результаты инструментов. Если ошибка — попробуй другой подход. Если данные есть — дай полный ответ с анализом.'
+      : workSystemPrompt;
 
     const response = await withRetry(() => generateWithModel(
       bestModel.provider,
@@ -443,38 +500,67 @@ ${toolsDescription}
     const toolCalls = parseToolCalls(response.content);
 
     if (toolCalls.length === 0) {
-      finalContent = response.content;
+      // Модель ответила без инструментов — сохраняем как рабочий контекст
+      workContextParts.push(`Ответ модели:\n${response.content}`);
       break;
     }
 
+    usedTools = true;
     allToolsUsed.push(...toolCalls.map(t => t.toolName));
     const toolResults = await executeToolCalls(toolCalls);
     const hasErrors = toolResults.some(r => !r.result.success);
     const cleanContent = response.content.replace(/<tool_use name="\w+">[\s\S]*?<\/tool_use>/g, '').trim();
 
+    if (cleanContent) {
+      workContextParts.push(`Размышления модели:\n${cleanContent}`);
+    }
+
     const toolResultsText = toolResults
       .map(r => {
         if (r.result.success) {
           const data = r.result.data;
-          return `[${r.toolName}]: ${typeof data === 'object' ? JSON.stringify(data, null, 2) : String(data)}`;
+          const dataStr = typeof data === 'object' ? JSON.stringify(data, null, 2) : String(data);
+          // Обрезаем слишком длинные результаты инструментов
+          return `[${r.toolName}]: ${dataStr.length > 2000 ? dataStr.slice(0, 2000) + '... [обрезано]' : dataStr}`;
         }
         return `[${r.toolName}] ОШИБКА: ${r.result.error}`;
       })
       .join('\n\n');
 
+    workContextParts.push(`Результаты инструментов:\n${toolResultsText}`);
+
     if (iteration < MAX_TOOL_ITERATIONS - 1) {
-      // Feed tool results back to model — let it formulate a human answer
-      // NEVER show raw JSON to user — always let model interpret results
       const errorNote = hasErrors
-        ? '\n\nНекоторые инструменты вернули ошибки. Попробуй другой подход:\n- Если file_system не нашёл файл — используй github tool с action "get_file" или "list_files"\n- Если github не работает — дай ответ на основе имеющихся данных\nНЕ показывай ошибки пользователю — дай полезный результат.'
-        : '\n\nИнструменты вернули данные. Сформулируй ЧЕЛОВЕЧЕСКИЙ ответ на основе полученных данных. НЕ показывай сырой JSON — перескажи результаты простыми словами. Дай конкретные выводы и рекомендации.';
-      currentPrompt = `Исходный запрос пользователя: ${message}\n\nТвой предыдущий ответ:\n${cleanContent}\n\nРезультаты инструментов:\n${toolResultsText}${errorNote}`;
+        ? '\nНекоторые инструменты вернули ошибки. Попробуй другой подход.'
+        : '\nДанные получены. Если нужно ещё — используй инструменты. Если достаточно — дай ответ.';
+      currentPrompt = `Исходный запрос: ${message}\n\nТвой предыдущий ответ:\n${cleanContent}\n\nРезультаты инструментов:\n${toolResultsText}${errorNote}`;
       continue;
     }
 
-    // Last iteration — use whatever we have, but strip raw JSON
-    finalContent = cleanContent || 'Не удалось получить ответ от инструментов. Попробуйте переформулировать запрос.';
-    break;
+    // Последняя итерация — сохраняем что есть
+    if (cleanContent) {
+      workContextParts.push(`Финальный ответ модели:\n${cleanContent}`);
+    }
+  }
+
+  const workContext = workContextParts.join('\n\n---\n\n');
+
+  console.log(`[SimpleTask] Work phase done. Tools used: ${usedTools}. Context parts: ${workContextParts.length}. Context length: ${workContext.length}`);
+
+  // ── ЭТАП 2: ФИНАЛИЗАЦИЯ (finalize) ──────────────────────────────────
+  // Отдельный вызов модели БЕЗ инструментов — чистый человеческий ответ
+
+  let finalContent: string;
+
+  if (!usedTools && workContextParts.length === 1) {
+    // Модель ответила напрямую без инструментов — всё равно финализируем,
+    // чтобы гарантировать чистый формат без кода/JSON
+    finalContent = await finalizeResponse(workContext, message, bestModel, session);
+    console.log(`[SimpleTask] Direct response finalized. Length: ${finalContent.length}`);
+  } else {
+    // Был рабочий этап с инструментами — обязательно финализируем
+    finalContent = await finalizeResponse(workContext, message, bestModel, session);
+    console.log(`[SimpleTask] Tool-based response finalized. Length: ${finalContent.length}`);
   }
 
   // Update plan status
@@ -483,22 +569,6 @@ ${toolsDescription}
   plan.phases[0].progress = 100;
 
   await completePhase(executionId, plan.phases[0].id, { content: finalContent });
-
-  // Log raw content before strip
-  console.log(`[SimpleTask] Raw finalContent length: ${finalContent.length}`);
-  console.log(`[SimpleTask] Raw finalContent preview: ${finalContent.slice(0, 200)}`);
-
-  // Strip code blocks — пользователь видит только заключения
-  finalContent = stripCodeBlocks(finalContent);
-
-  console.log(`[SimpleTask] After strip length: ${finalContent.length}`);
-  console.log(`[SimpleTask] After strip preview: ${finalContent.slice(0, 200)}`);
-
-  // Защита от пустого ответа
-  if (!finalContent || finalContent.trim().length === 0 || finalContent.trim() === '[см. код в результатах анализа]') {
-    finalContent = 'Задача выполнена. К сожалению, модель вернула только код без текстовых выводов. Попробуйте переформулировать запрос — например, попросите объяснить или проанализировать вместо генерации кода.';
-    console.log(`[SimpleTask] ⚠️ Empty response detected, using fallback message`);
-  }
 
   // Save assistant response to chat history
   addChatMessage({ role: 'assistant', content: finalContent, timestamp: Date.now() }, session);
@@ -627,18 +697,30 @@ async function handlePlanExecution(plan: ExecutionPlan, idempotencyKey?: string,
     if (res?.error) console.log(`[PlanExec]   error: ${String(res.error)}`);
   });
 
-  // Build a human-readable summary message for the user
-  const resultParts = results.map(r => {
-    const res = r.result as { synthesis?: string; output?: string; code?: string; tasks?: unknown[]; error?: string; model?: string } | null;
+  // ── Финализация: модель формулирует чистый ответ ──────────────────
+  // Собираем рабочий контекст из всех фаз
+  const workContextParts = results.map(r => {
+    const res = r.result as Record<string, unknown> | null;
     if (!res) return '';
-    if (res.error) return `**${r.phase}:** Ошибка — ${res.error}`;
+    if (res.error) return `Фаза "${r.phase}": ОШИБКА — ${res.error}`;
     const text = res.synthesis || res.output || res.code || '';
-    return text ? `**${r.phase}:**\n${stripCodeBlocks(typeof text === 'string' ? text : JSON.stringify(text)).slice(0, 500)}` : '';
-  }).filter(Boolean).join('\n\n');
+    const textStr = typeof text === 'string' ? text : JSON.stringify(text);
+    return textStr ? `Фаза "${r.phase}":\n${textStr.slice(0, 2000)}` : '';
+  }).filter(Boolean).join('\n\n---\n\n');
 
-  const summaryMessage = resultParts
-    ? `Готово! Вот результаты:\n\n${resultParts}`
-    : 'Выполнение завершено.';
+  let summaryMessage: string;
+
+  if (workContextParts) {
+    // Финализируем через модель — чистый человеческий ответ
+    const bestModel = getAvailableModels().find(m => m.available);
+    if (bestModel) {
+      summaryMessage = await finalizeResponse(workContextParts, originalMessage, bestModel, session);
+    } else {
+      summaryMessage = 'Выполнение завершено, но нет доступных моделей для формирования ответа.';
+    }
+  } else {
+    summaryMessage = 'Выполнение завершено.';
+  }
 
   console.log(`[PlanExec] Summary message length: ${summaryMessage.length}`);
 
@@ -658,19 +740,13 @@ async function handlePlanExecution(plan: ExecutionPlan, idempotencyKey?: string,
 async function executeSingleMode(task: string, provider: ModelProvider) {
   const model = getAvailableModels().find(m => m.provider === provider && m.available);
   const projectsContext = getProjectsContext();
+  // Single mode — рабочий промпт, разрешаем свободный формат
+  // Финализация произойдёт в handlePlanExecution через finalizeResponse
   const singleSystemPrompt = `Ты — Chimera AI, эксперт по разработке. Выполни задачу полностью и конкретно.${projectsContext}
 
 Отвечай на том языке, на котором написана задача.
-Будь КРАТКИМ — максимум 400 слов.
-ЗАПРЕЩЕНО выдавать блоки кода. Отвечай ТОЛЬКО текстом — заключения, выводы, рекомендации простыми словами.
-Если нужно описать код — объясни словами, не показывай код.
-
-## Стиль общения
-Общайся как живой коллега. В конце ответа ВСЕГДА предложи 2-3 следующих шага:
-
-**Что можно сделать дальше:**
-• [действие 1]
-• [действие 2]`;
+Дай подробный технический ответ с конкретикой — файлы, функции, архитектура.
+Код и технические детали допустимы — это рабочий контекст для дальнейшей обработки.`;
 
   if (!model) {
     // Fallback to any available model
@@ -786,15 +862,22 @@ ${trimmedResults}
 • [действие 2]
 • [действие 3]`;
 
+    // Синтез через двухэтапную обработку: Алекс анализирует, потом финализация
     const synthesisResponse = await withRetry(() => generateWithModel(
       lead.provider,
       lead.modelId,
       synthesisPrompt,
-      'Ты — Алекс, ведущий архитектор команды Chimera. Дай КРАТКОЕ заключение по результатам команды. МАКСИМУМ 300 слов. ЗАПРЕЩЕНО выдавать блоки кода (```). Только текстовые выводы, проблемы, план действий простыми словами. Отвечай на русском.',
+      'Ты — Алекс, ведущий архитектор команды Chimera. Проанализируй результаты команды и дай подробный технический разбор. Код и JSON допустимы — это рабочий контекст.',
       { maxTokens: 2000 }
     ));
 
-    synthesis = stripCodeBlocks(synthesisResponse.content || synthesis);
+    // Финализируем через отдельный вызов — чистый человеческий ответ
+    synthesis = await finalizeResponse(
+      synthesisResponse.content || '',
+      originalMessage,
+      { provider: lead.provider, apiModel: lead.modelId },
+      session
+    );
   }
 
   return {
