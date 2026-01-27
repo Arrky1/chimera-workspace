@@ -74,7 +74,7 @@ const MEMBER_TEMPLATES: Record<string, Omit<TeamMember, 'id' | 'status' | 'curre
     role: 'senior_developer',
     emoji: '💻',
     provider: 'openai',
-    modelId: 'o3',
+    modelId: 'gpt-5.2',
     specialty: ['code', 'algorithms', 'mathematics', 'optimization'],
   },
   kate: {

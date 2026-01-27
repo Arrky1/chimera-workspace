@@ -145,6 +145,14 @@ export const MODELS: ModelConfig[] = [
   },
   // OpenAI models
   {
+    id: 'gpt-5.2',
+    provider: 'openai',
+    name: 'GPT-5.2',
+    apiModel: 'gpt-5.2',
+    strengths: ['complex_reasoning', 'code', 'architecture', 'agentic', 'multimodal'],
+    available: false,
+  },
+  {
     id: 'gpt-4o',
     provider: 'openai',
     name: 'GPT-4o',
