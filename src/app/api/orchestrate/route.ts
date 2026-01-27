@@ -181,8 +181,8 @@ async function handleInitialMessage(message: string, idempotencyKey?: string) {
   // 2. Detect ambiguities
   const ambiguities = await detectAmbiguities(message, intent);
 
-  // 3. If high confidence and no critical ambiguities, proceed directly
-  if (intent.confidence >= 0.85 && ambiguities.filter(a => a.severity === 'high').length === 0) {
+  // 3. If no critical ambiguities, proceed directly (only ask for truly unclear tasks)
+  if (ambiguities.filter(a => a.severity === 'high').length === 0) {
     return proceedWithExecution(message, intent, idempotencyKey, executionId);
   }
 

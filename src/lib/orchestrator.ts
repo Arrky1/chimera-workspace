@@ -10,12 +10,9 @@ import {
 } from '@/types';
 import { generateWithModel, getAvailableModels, getBestModelForTask } from './models';
 
-// Vague terms that indicate ambiguity
+// Vague terms that indicate ambiguity - only truly ambiguous phrases
 const VAGUE_TERMS = [
-  'это', 'там', 'тут', 'то', 'такое', 'нормально',
-  'красиво', 'быстро', 'лучше', 'правильно',
   'как надо', 'как обычно', 'стандартно',
-  'this', 'that', 'it', 'better', 'nice', 'properly',
   'the button', 'the form', 'the page',
 ];
 
@@ -49,10 +46,11 @@ export async function parseIntent(input: string): Promise<ParsedIntent> {
   const hasVagueTerms = VAGUE_TERMS.some(term => lowerInput.includes(term));
   const hasSpecificTarget = /\b(файл|file|функци|function|компонент|component|страниц|page)\s+\w+/i.test(input);
 
-  let confidence = 0.5;
-  if (hasSpecificTarget) confidence += 0.3;
-  if (!hasVagueTerms) confidence += 0.2;
-  if (scope) confidence += 0.1;
+  // Start with high confidence - only reduce for truly ambiguous requests
+  let confidence = 0.9;
+  if (hasVagueTerms) confidence -= 0.3;
+  if (hasSpecificTarget) confidence += 0.05;
+  if (scope) confidence += 0.05;
 
   return {
     action,
@@ -102,14 +100,14 @@ export async function detectAmbiguities(
     }
   }
 
-  // Check for missing scope
-  if (!intent.scope && ['create', 'modify', 'delete'].includes(intent.action)) {
+  // Only ask about scope for destructive operations on the entire project
+  if (!intent.scope && intent.action === 'delete' && /все|весь|целиком|полностью|all|entire/i.test(input)) {
     ambiguities.push({
       type: 'scope',
       term: intent.action,
-      question: `Какой масштаб изменений для "${intent.action}"?`,
-      candidates: ['Минимальный (только указанное)', 'Умеренный (+ связанное)', 'Полный (весь проект)'],
-      severity: 'medium',
+      question: 'Подтвердите масштаб удаления:',
+      candidates: ['Минимальный (только указанное)', 'Полный (всё связанное)'],
+      severity: 'high',
     });
   }
 
@@ -145,8 +143,8 @@ export function generateClarificationQuestions(
   if (ambiguities.length === 0) return null;
 
   const questions: ClarificationQuestion[] = ambiguities
-    .filter(a => a.severity !== 'low')
-    .slice(0, 3) // Max 3 questions at a time
+    .filter(a => a.severity === 'high')
+    .slice(0, 2) // Max 2 critical questions
     .map((amb, idx) => ({
       id: `q-${idx}`,
       question: amb.question,
