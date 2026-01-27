@@ -27,7 +27,8 @@ import {
   updateTaskNode,
 } from '@/lib/chat-store';
 import type { TaskNode } from '@/lib/chat-store';
-import { getAllProjects, getProjectContextSummary } from '@/lib/project-store';
+import { getAllProjects, getProjectContextSummary, hasProject } from '@/lib/project-store';
+import { parseGitHubUrl } from '@/lib/github';
 import {
   createExecution,
   getExecution,
@@ -249,9 +250,67 @@ export async function POST(request: NextRequest) {
   }
 }
 
+// Auto-detect GitHub links in message and add projects if not already added
+async function autoDetectGitHubLinks(message: string): Promise<string[]> {
+  const githubRegex = /(?:https?:\/\/)?github\.com\/[\w.-]+\/[\w.-]+/gi;
+  const matches = message.match(githubRegex);
+  if (!matches) return [];
+
+  const added: string[] = [];
+
+  for (const rawUrl of [...new Set(matches)]) {
+    const url = rawUrl.startsWith('http') ? rawUrl : `https://${rawUrl}`;
+    const parsed = parseGitHubUrl(url);
+    if (!parsed) continue;
+
+    // Skip if already added
+    if (hasProject(parsed.url)) {
+      console.log(`[AutoDetect] Project ${parsed.fullName} already added`);
+      continue;
+    }
+
+    // Add project via internal API call (handles cloning + analysis)
+    try {
+      const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || process.env.RAILWAY_PUBLIC_DOMAIN
+        ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`
+        : 'http://localhost:3000';
+      const res = await fetch(`${baseUrl}/api/projects`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'add', githubUrl: url }),
+      });
+
+      if (res.ok) {
+        added.push(`${parsed.owner}/${parsed.name}`);
+        console.log(`[AutoDetect] Auto-added project: ${parsed.fullName}`);
+      } else {
+        const err = await res.json().catch(() => ({}));
+        // Already added is not an error
+        if (err.projectId) {
+          console.log(`[AutoDetect] Project ${parsed.fullName} was already added`);
+        } else {
+          console.log(`[AutoDetect] Failed to add ${parsed.fullName}: ${err.error || res.status}`);
+        }
+      }
+    } catch (e) {
+      console.log(`[AutoDetect] Error adding ${parsed.fullName}: ${e}`);
+    }
+  }
+
+  return added;
+}
+
 async function handleInitialMessage(message: string, idempotencyKey?: string, session: string = 'main') {
   // Generate execution ID early for tracking
   const executionId = generateExecutionId();
+
+  // 0. Auto-detect GitHub links and add projects
+  const autoAdded = await autoDetectGitHubLinks(message);
+  if (autoAdded.length > 0) {
+    console.log(`[Orchestrator] Auto-added projects: ${autoAdded.join(', ')}`);
+    // Enrich message with context about auto-added projects
+    message = `${message}\n\n[Система: автоматически добавлены проекты: ${autoAdded.join(', ')}. Клонирование и анализ запущены в фоне.]`;
+  }
 
   // 1. Parse intent
   const intent = await parseIntent(message);
