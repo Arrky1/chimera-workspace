@@ -43,7 +43,8 @@ export const config = {
      * - favicon.ico (favicon file)
      * - login page
      * - api/auth (auth endpoints)
+     * - api/health, api/healthz (health checks)
      */
-    '/((?!_next/static|_next/image|favicon.ico|login|api/auth).*)',
+    '/((?!_next/static|_next/image|favicon.ico|login|api/auth|api/health|api/healthz).*)',
   ],
 };
