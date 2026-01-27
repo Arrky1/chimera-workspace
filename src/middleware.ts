@@ -2,8 +2,9 @@ import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 
 export function middleware(request: NextRequest) {
-  // Skip auth for API health checks
-  if (request.nextUrl.pathname === '/api/orchestrate' && request.method === 'GET') {
+  // Skip auth for health check endpoints
+  const healthPaths = ['/api/health', '/api/healthz', '/api/orchestrate'];
+  if (healthPaths.some(p => request.nextUrl.pathname === p) && request.method === 'GET') {
     return NextResponse.next();
   }
 
