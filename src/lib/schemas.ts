@@ -158,8 +158,18 @@ export type DebateResult = z.infer<typeof DebateResultSchema>;
 // API Request/Response Schemas
 // =============================================================================
 
+export const ChatHistoryMessageSchema = z.object({
+  role: z.enum(['user', 'assistant', 'system']),
+  content: z.string(),
+  timestamp: z.number().optional(),
+});
+
+export type ChatHistoryMessage = z.infer<typeof ChatHistoryMessageSchema>;
+
 export const OrchestrateRequestSchema = z.object({
   message: z.string().min(1, 'Message is required').optional(),
+  history: z.array(ChatHistoryMessageSchema).optional(), // История диалога
+  sessionId: z.string().optional(), // ID сессии для разделения историй
   clarificationAnswers: z.record(z.string(), z.string()).optional(),
   confirmedPlan: ExecutionPlanSchema.optional(),
   idempotencyKey: z.string().optional(),

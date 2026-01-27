@@ -32,6 +32,7 @@ export default function Home() {
   const [activityExpanded, setActivityExpanded] = useState(true);
   const { activities, addActivity, updateActivity, clearActivities } = useActivityFeed();
   const { events, addEvent, clearEvents, exportEvents } = useEventLog();
+  const [sessionId] = useState<string>(() => `session-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   const [currentMode, setCurrentMode] = useState<ExecutionMode>('single');
   const [modelStats, setModelStats] = useState<{
     provider: ModelProvider;
@@ -117,10 +118,21 @@ export default function Home() {
     }
 
     try {
+      // Формируем историю последних сообщений для контекста
+      const recentHistory = messages.slice(-10).map(m => ({
+        role: m.role,
+        content: m.content,
+        timestamp: m.timestamp ? new Date(m.timestamp).getTime() : Date.now(),
+      }));
+
       const response = await fetch('/api/orchestrate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: input }),
+        body: JSON.stringify({
+          message: input,
+          history: recentHistory,
+          sessionId,
+        }),
       });
 
       const data = await response.json();
@@ -197,12 +209,20 @@ export default function Home() {
     setIsProcessing(true);
 
     try {
+      const recentHistory = messages.slice(-10).map(m => ({
+        role: m.role,
+        content: m.content,
+        timestamp: m.timestamp ? new Date(m.timestamp).getTime() : Date.now(),
+      }));
+
       const response = await fetch('/api/orchestrate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           message: pendingClarification.originalMessage,
           clarificationAnswers: answers,
+          history: recentHistory,
+          sessionId,
         }),
       });
 
@@ -266,7 +286,7 @@ export default function Home() {
       const response = await fetch('/api/orchestrate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ confirmedPlan: plan }),
+        body: JSON.stringify({ confirmedPlan: plan, sessionId }),
       });
 
       // Stop progress simulation

@@ -305,10 +305,11 @@ export async function generateWithModel(
   modelId: string,
   prompt: string,
   systemPrompt?: string,
-  options?: { timeout?: number; skipHealthCheck?: boolean }
+  options?: { timeout?: number; skipHealthCheck?: boolean; maxTokens?: number }
 ): Promise<ModelResponse> {
   const startTime = Date.now();
   const timeout = options?.timeout || PROVIDER_TIMEOUTS[provider] || DEFAULT_TIMEOUT_MS;
+  const maxTokens = options?.maxTokens || 4096;
 
   // Check provider health (skip if explicitly told to)
   if (!options?.skipHealthCheck) {
@@ -339,7 +340,7 @@ export async function generateWithModel(
           const client = getAnthropicClient();
           const response = await client.messages.create({
             model: modelId,
-            max_tokens: 4096,
+            max_tokens: maxTokens,
             system: systemPrompt || 'You are a helpful AI assistant.',
             messages: [{ role: 'user', content: prompt }],
           });
@@ -355,7 +356,7 @@ export async function generateWithModel(
               ...(systemPrompt ? [{ role: 'system' as const, content: systemPrompt }] : []),
               { role: 'user', content: prompt },
             ],
-            max_tokens: 4096,
+            max_tokens: maxTokens,
           });
           content = response.choices[0]?.message?.content || '';
           break;
@@ -369,7 +370,7 @@ export async function generateWithModel(
               ...(systemPrompt ? [{ role: 'system' as const, content: systemPrompt }] : []),
               { role: 'user', content: prompt },
             ],
-            max_tokens: 4096,
+            max_tokens: maxTokens,
           });
           content = response.choices[0]?.message?.content || '';
 
@@ -407,7 +408,7 @@ export async function generateWithModel(
               ...(systemPrompt ? [{ role: 'system' as const, content: systemPrompt }] : []),
               { role: 'user', content: prompt },
             ],
-            max_tokens: 4096,
+            max_tokens: maxTokens,
           });
           content = response.choices[0]?.message?.content || '';
           break;
@@ -421,7 +422,7 @@ export async function generateWithModel(
               ...(systemPrompt ? [{ role: 'system' as const, content: systemPrompt }] : []),
               { role: 'user', content: prompt },
             ],
-            max_tokens: 4096,
+            max_tokens: maxTokens,
           });
           content = response.choices[0]?.message?.content || '';
 

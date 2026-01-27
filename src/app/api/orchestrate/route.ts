@@ -18,6 +18,15 @@ import {
   OrchestrateRequestSchema,
   validateOrThrow,
 } from '@/lib/schemas';
+import {
+  getChatHistory,
+  addChatMessage,
+  buildConversationContext,
+  buildTaskTreeContext,
+  createTaskTree,
+  updateTaskNode,
+} from '@/lib/chat-store';
+import type { TaskNode } from '@/lib/chat-store';
 import { getAllProjects, getProjectContextSummary } from '@/lib/project-store';
 import {
   createExecution,
@@ -110,7 +119,26 @@ export async function POST(request: NextRequest) {
 
     // Validate request with Zod schema
     const validatedRequest = validateOrThrow(OrchestrateRequestSchema, body);
-    const { message, clarificationAnswers, confirmedPlan, idempotencyKey, executionId } = validatedRequest;
+    const { message, history, sessionId, clarificationAnswers, confirmedPlan, idempotencyKey, executionId } = validatedRequest;
+
+    // Session management
+    const session = sessionId || 'main';
+
+    // Sync: если серверная история пуста (сервер перезагрузился), восстанавливаем из клиента
+    const serverHistory = getChatHistory(session);
+    if (serverHistory.length === 0 && history && history.length > 0) {
+      for (const msg of history) {
+        addChatMessage(
+          { role: msg.role, content: msg.content, timestamp: msg.timestamp || Date.now() },
+          session
+        );
+      }
+    }
+
+    // Сохраняем текущее сообщение пользователя
+    if (message) {
+      addChatMessage({ role: 'user', content: message, timestamp: Date.now() }, session);
+    }
 
     // Idempotency check - return existing execution if duplicate request
     if (idempotencyKey) {
@@ -157,13 +185,13 @@ export async function POST(request: NextRequest) {
 
     // If we have clarification answers, process them and continue
     if (clarificationAnswers && message) {
-      return handleClarificationResponse(message, clarificationAnswers, idempotencyKey);
+      return handleClarificationResponse(message, clarificationAnswers, idempotencyKey, session);
     }
 
     // If plan is confirmed, execute it
     if (confirmedPlan) {
       // Cast to ExecutionPlan from @/types (validated by schema)
-      return handlePlanExecution(confirmedPlan as ExecutionPlan, idempotencyKey);
+      return handlePlanExecution(confirmedPlan as ExecutionPlan, idempotencyKey, session);
     }
 
     // Initial message processing (message is guaranteed by refine validation)
@@ -173,7 +201,7 @@ export async function POST(request: NextRequest) {
         { status: 400 }
       );
     }
-    return handleInitialMessage(message, idempotencyKey);
+    return handleInitialMessage(message, idempotencyKey, session);
   } catch (error) {
     console.error('Orchestrator error:', error);
 
@@ -191,7 +219,7 @@ export async function POST(request: NextRequest) {
   }
 }
 
-async function handleInitialMessage(message: string, idempotencyKey?: string) {
+async function handleInitialMessage(message: string, idempotencyKey?: string, session: string = 'main') {
   // Generate execution ID early for tracking
   const executionId = generateExecutionId();
 
@@ -203,7 +231,7 @@ async function handleInitialMessage(message: string, idempotencyKey?: string) {
 
   // 3. If no critical ambiguities, proceed directly (only ask for truly unclear tasks)
   if (ambiguities.filter(a => a.severity === 'high').length === 0) {
-    return proceedWithExecution(message, intent, idempotencyKey, executionId);
+    return proceedWithExecution(message, intent, idempotencyKey, executionId, session);
   }
 
   // 4. Generate clarification questions
@@ -220,13 +248,14 @@ async function handleInitialMessage(message: string, idempotencyKey?: string) {
   }
 
   // 5. No ambiguities found, proceed
-  return proceedWithExecution(message, intent, idempotencyKey, executionId);
+  return proceedWithExecution(message, intent, idempotencyKey, executionId, session);
 }
 
 async function handleClarificationResponse(
   originalMessage: string,
   answers: Record<string, string>,
-  idempotencyKey?: string
+  idempotencyKey?: string,
+  session: string = 'main'
 ) {
   // Re-parse with clarified context
   const clarifiedContext = Object.values(answers).join('. ');
@@ -235,14 +264,15 @@ async function handleClarificationResponse(
   const intent = await parseIntent(enrichedMessage);
   intent.confidence = 0.95; // Bump confidence since we have clarifications
 
-  return proceedWithExecution(enrichedMessage, intent, idempotencyKey);
+  return proceedWithExecution(enrichedMessage, intent, idempotencyKey, undefined, session);
 }
 
 async function proceedWithExecution(
   message: string,
   intent: Awaited<ReturnType<typeof parseIntent>>,
   idempotencyKey?: string,
-  existingExecutionId?: string
+  existingExecutionId?: string,
+  session: string = 'main'
 ) {
   // 1. Classify task
   const classification = classifyTask(intent, message);
@@ -266,7 +296,7 @@ async function proceedWithExecution(
 
   // 4. For simple tasks, execute immediately
   if (classification.complexity === 'simple') {
-    return executeSimpleTask(message, intent, plan, executionId);
+    return executeSimpleTask(message, intent, plan, executionId, session);
   }
 
   // 5. For complex tasks, return plan for confirmation
@@ -284,7 +314,8 @@ async function executeSimpleTask(
   message: string,
   intent: Awaited<ReturnType<typeof parseIntent>>,
   plan: ExecutionPlan,
-  executionId: string
+  executionId: string,
+  session: string = 'main'
 ) {
   const availableModels = getAvailableModels();
   const bestModel = getBestModelForTask('code', availableModels.filter(m => m.available));
@@ -301,10 +332,17 @@ async function executeSimpleTask(
   // Start phase tracking
   await startPhase(executionId, plan.phases[0].id);
 
-  // Include available tools and project context in system prompt
+  // Include available tools, project context, and conversation history in system prompt
   const toolsDescription = getToolDescriptions();
   const projectsContext = getProjectsContext();
+  const conversationContext = buildConversationContext(session, 10);
+  const taskTreeContext = buildTaskTreeContext(session);
+
   const systemPrompt = `Ты — Chimera AI, мультимодельный ассистент для разработки и анализа кода. Отвечай на том языке, на котором пишет пользователь.${projectsContext}
+
+${conversationContext}
+
+${taskTreeContext}
 
 ## Доступные инструменты
 ${toolsDescription}
@@ -318,12 +356,14 @@ ${toolsDescription}
 - Если один способ не работает — сразу пробуй другой
 
 ## Инструкции
-- Отвечай КРАТКО и по делу. Не выдавай огромные блоки кода без запроса
-- Если нужен код — показывай только ключевые фрагменты (до 20 строк), не весь файл
+- У тебя ЕСТЬ контекст диалога выше. Когда пользователь ссылается на "тот текст", "предыдущий ответ", "результат" — ищи в истории диалога
+- Отвечай КРАТКО и по делу. Максимум 300 слов для обычного ответа
+- Не выдавай огромные блоки кода без запроса. Если нужен код — показывай только ключевые фрагменты (до 20 строк), не весь файл
 - Называй файлы, строки, проблемы конкретно
 - НИКОГДА не показывай пользователю сырые ошибки инструментов (ENOENT, Error и т.д.) — попробуй другой подход или дай ответ на основе имеющихся данных
 - Предлагай исправления с примерами кода
-- Не задавай лишних вопросов — сразу действуй`;
+- Не задавай лишних вопросов — сразу действуй
+- НИКОГДА не спрашивай "о каком тексте идёт речь" — проверь историю диалога`;
 
   const startTime = Date.now();
   let totalLatency = 0;
@@ -410,6 +450,9 @@ ${toolsDescription}
 
   await completePhase(executionId, plan.phases[0].id, { content: finalContent });
 
+  // Save assistant response to chat history
+  addChatMessage({ role: 'assistant', content: finalContent, timestamp: Date.now() }, session);
+
   return NextResponse.json({
     type: 'result',
     message: finalContent,
@@ -421,7 +464,7 @@ ${toolsDescription}
   });
 }
 
-async function handlePlanExecution(plan: ExecutionPlan, idempotencyKey?: string) {
+async function handlePlanExecution(plan: ExecutionPlan, idempotencyKey?: string, session: string = 'main') {
   const results: Array<{ phase: string; result: unknown }> = [];
   const originalMessage = plan.originalMessage; // Get the original context!
 
@@ -487,7 +530,7 @@ async function handlePlanExecution(plan: ExecutionPlan, idempotencyKey?: string)
           break;
 
         case 'swarm':
-          phaseResult = await executeSwarmMode(originalMessage);
+          phaseResult = await executeSwarmMode(originalMessage, session);
           break;
 
         case 'single':
@@ -522,6 +565,16 @@ async function handlePlanExecution(plan: ExecutionPlan, idempotencyKey?: string)
 
   plan.status = 'completed';
 
+  // Save execution result to chat history
+  const resultSummary = results.map(r => {
+    const output = typeof r.result === 'object' && r.result !== null
+      ? (r.result as { synthesis?: string; output?: string }).synthesis || (r.result as { output?: string }).output || 'Выполнено'
+      : String(r.result);
+    // Trim long results for history
+    return `[${r.phase}]: ${output.slice(0, 300)}`;
+  }).join('\n');
+  addChatMessage({ role: 'assistant', content: resultSummary, timestamp: Date.now() }, session);
+
   return NextResponse.json({
     type: 'execution_complete',
     plan,
@@ -537,7 +590,7 @@ async function executeSingleMode(task: string, provider: ModelProvider) {
   const singleSystemPrompt = `Ты — Chimera AI, эксперт по разработке. Выполни задачу полностью и конкретно.${projectsContext}
 
 Отвечай на том языке, на котором написана задача.
-Будь КРАТКИМ — не выдавай огромные блоки кода без запроса. Показывай только ключевые фрагменты.`;
+Будь КРАТКИМ — максимум 300 слов. Не выдавай огромные блоки кода без запроса. Показывай только ключевые фрагменты (до 20 строк).`;
 
   if (!model) {
     // Fallback to any available model
@@ -565,7 +618,7 @@ async function executeSingleMode(task: string, provider: ModelProvider) {
 }
 
 // Execute swarm mode with parallel tasks and rate limiting
-async function executeSwarmMode(originalMessage: string) {
+async function executeSwarmMode(originalMessage: string, session: string = 'main') {
   const teamManager = getTeamManager();
 
   // Алекс анализирует и планирует
@@ -578,15 +631,36 @@ async function executeSwarmMode(originalMessage: string) {
   const team = teamManager.assembleTeam(taskPlan.requiredRoles);
   const tasks = taskPlan.taskBreakdown.map(t => teamManager.createTask(t));
 
+  // Создаём дерево задач для отслеживания
+  const taskNodes: TaskNode[] = tasks.map(task => ({
+    id: task.id,
+    title: task.description,
+    status: 'pending' as const,
+    children: [],
+    createdAt: Date.now(),
+  }));
+  createTaskTree(originalMessage.slice(0, 100), taskNodes, session);
+
   // Создаём функции выполнения задач
-  const taskExecutors = tasks.map(task => async () => {
+  const taskExecutors = tasks.map((task, idx) => async () => {
     const member = teamManager.assignTask(task, team);
     if (!member) {
+      updateTaskNode(task.id, { status: 'failed', result: 'Нет свободных членов команды' }, session);
       return { taskId: task.id, member: 'не назначен', result: 'Нет свободных членов команды' };
     }
 
+    // Обновляем статус в дереве задач
+    updateTaskNode(task.id, { status: 'in_progress', provider: `${member.name} (${member.provider})` }, session);
+
     // executeTask() внутри team.ts сам делает fallback при ошибке
     const result = await teamManager.executeTask(task, member);
+
+    updateTaskNode(task.id, {
+      status: 'completed',
+      result: result.slice(0, 200),
+      completedAt: Date.now(),
+    }, session);
+
     return {
       taskId: task.id,
       member: `${member.name} ${member.emoji}`,
@@ -604,20 +678,24 @@ async function executeSwarmMode(originalMessage: string) {
   let synthesis = 'Результаты команды скомпилированы.';
 
   if (swarmResults.length > 0) {
-    const synthesisPrompt = `Результаты работы команды:
+    // Включаем контекст разговора в синтез
+    const historyContext = buildConversationContext(session, 5);
+
+    const synthesisPrompt = `${historyContext ? historyContext + '\n\n' : ''}Результаты работы команды:
 
 ${swarmResults.map(r => `**${r.member} (${r.provider}):**\n${r.result}`).join('\n\n---\n\n')}
 
 Исходный запрос: ${originalMessage}
 
 Объедини результаты в один структурированный ответ. Убери дублирования. Выдели главное.
-Если некоторые результаты пусты или содержат ошибки — не упоминай их, работай с тем что есть.`;
+Если некоторые результаты пусты или содержат ошибки — не упоминай их, работай с тем что есть.
+Ответ должен быть КРАТКИМ — максимум 500 слов. Не выдавай огромные блоки кода.`;
 
     const synthesisResponse = await withRetry(() => generateWithModel(
       lead.provider,
       lead.modelId,
       synthesisPrompt,
-      'Ты — Алекс, ведущий архитектор команды Chimera. Синтезируй результаты команды КРАТКО и структурированно. Отвечай на русском.'
+      'Ты — Алекс, ведущий архитектор команды Chimera. Синтезируй результаты команды КРАТКО и структурированно. Максимум 500 слов. Отвечай на русском.'
     ));
 
     synthesis = synthesisResponse.content || synthesis;
