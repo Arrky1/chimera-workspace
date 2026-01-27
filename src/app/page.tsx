@@ -169,6 +169,42 @@ export default function Home() {
         if (data.requiresConfirmation) {
           await executePlan(data.plan, assistantMessage.id);
         }
+      } else if (data.type === 'execution_complete') {
+        // Сервер автоматически выполнил задачу (medium/complex) — показываем результаты
+        addMessage({
+          role: 'assistant',
+          content: data.message || '',
+          executionPlan: data.plan,
+        });
+
+        // Удаляем блоки кода — показываем только заключения
+        const stripCode = (text: string) =>
+          text.replace(/```[\s\S]*?```/g, '').replace(/`[^`]{50,}`/g, '').trim();
+
+        const resultContent = data.results
+          ?.map((r: { phase: string; result: { output?: string; code?: string; synthesis?: string; tasks?: { member: string; provider: string; result: string }[] } }) => {
+            // Для swarm — показываем участников
+            if (r.result?.tasks && Array.isArray(r.result.tasks)) {
+              const teamSummary = r.result.tasks.map((t: { member: string; provider: string; result: string }) =>
+                `  ${t.member} (${t.provider})`
+              ).join('\n');
+              const synthesis = r.result.synthesis
+                ? stripCode(typeof r.result.synthesis === 'string' ? r.result.synthesis : '')
+                : '';
+              return `**${r.phase}:**\nКоманда:\n${teamSummary}\n\n${synthesis}`;
+            }
+            const raw = r.result?.synthesis || r.result?.output || r.result?.code || 'Выполнено';
+            const cleaned = stripCode(typeof raw === 'string' ? raw : JSON.stringify(raw));
+            return `**${r.phase}:**\n${cleaned}`;
+          })
+          .join('\n\n');
+
+        if (resultContent) {
+          addMessage({
+            role: 'assistant',
+            content: `Выполнение завершено!\n\n${resultContent}`,
+          });
+        }
       } else if (data.type === 'result') {
         addMessage({
           role: 'assistant',
@@ -178,7 +214,7 @@ export default function Home() {
       } else if (data.type === 'error') {
         addMessage({
           role: 'assistant',
-          content: `❌ Ошибка: ${data.message}`,
+          content: `Ошибка: ${data.message}`,
         });
       }
     } catch (error) {
@@ -236,6 +272,29 @@ export default function Home() {
         });
 
         await executePlan(data.plan, assistantMessage.id);
+      } else if (data.type === 'execution_complete') {
+        addMessage({
+          role: 'assistant',
+          content: data.message || '',
+          executionPlan: data.plan,
+        });
+
+        const stripCode = (text: string) =>
+          text.replace(/```[\s\S]*?```/g, '').replace(/`[^`]{50,}`/g, '').trim();
+
+        const resultContent = data.results
+          ?.map((r: { phase: string; result: { output?: string; synthesis?: string } }) => {
+            const raw = r.result?.synthesis || r.result?.output || 'Выполнено';
+            return `**${r.phase}:** ${stripCode(typeof raw === 'string' ? raw : '')}`;
+          })
+          .join('\n\n');
+
+        if (resultContent) {
+          addMessage({
+            role: 'assistant',
+            content: `Выполнение завершено!\n\n${resultContent}`,
+          });
+        }
       } else if (data.type === 'result') {
         addMessage({
           role: 'assistant',
@@ -247,7 +306,7 @@ export default function Home() {
       console.error('Clarification error:', error);
       addMessage({
         role: 'assistant',
-        content: '❌ Ошибка при обработке уточнений.',
+        content: 'Ошибка при обработке уточнений.',
       });
     } finally {
       setIsProcessing(false);

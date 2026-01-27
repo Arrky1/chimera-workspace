@@ -132,6 +132,10 @@ export async function POST(request: NextRequest) {
     console.log(`[Orchestrator] Доступные модели (${availProviders.length}): ${availProviders.join(', ')}`);
 
     // Validate request with Zod schema
+    console.log(`[Orchestrator] Request keys: ${Object.keys(body).join(', ')}`);
+    if (body.confirmedPlan) {
+      console.log(`[Orchestrator] confirmedPlan.id=${body.confirmedPlan.id}, status=${body.confirmedPlan.status}, phases=${body.confirmedPlan.phases?.length}`);
+    }
     const validatedRequest = validateOrThrow(OrchestrateRequestSchema, body);
     const { message, history, sessionId, clarificationAnswers, confirmedPlan, idempotencyKey, executionId } = validatedRequest;
 
@@ -221,12 +225,17 @@ export async function POST(request: NextRequest) {
 
     // Check if it's a validation error
     const isValidationError = error instanceof Error && error.message.startsWith('Validation failed');
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+    if (isValidationError) {
+      console.error(`[Orchestrator] Validation details: ${errorMessage}`);
+    }
 
     return NextResponse.json(
       {
         type: 'error',
-        message: isValidationError ? 'Ошибка валидации запроса' : 'Внутренняя ошибка сервера',
-        details: error instanceof Error ? error.message : 'Unknown error'
+        message: isValidationError ? `Ошибка валидации: ${errorMessage}` : 'Внутренняя ошибка сервера',
+        details: errorMessage,
       },
       { status: isValidationError ? 400 : 500 }
     );
@@ -313,21 +322,10 @@ async function proceedWithExecution(
     return executeSimpleTask(message, intent, plan, executionId, session);
   }
 
-  // 5. For medium tasks — auto-execute plan (swarm/team)
-  if (classification.complexity === 'medium') {
-    console.log(`[Orchestrator] Auto-executing medium task with mode: ${classification.recommendedMode}`);
-    return handlePlanExecution(plan, idempotencyKey, session);
-  }
-
-  // 6. For complex tasks, return plan for confirmation
-  return NextResponse.json({
-    type: 'plan',
-    message: 'Вот план выполнения задачи:',
-    plan,
-    classification,
-    requiresConfirmation: true,
-    executionId,
-  });
+  // 5. For medium and complex tasks — auto-execute plan (swarm/team)
+  // Не отправляем план обратно на клиент для подтверждения — выполняем сразу на сервере
+  console.log(`[Orchestrator] Auto-executing ${classification.complexity} task with mode: ${classification.recommendedMode}`);
+  return handlePlanExecution(plan, idempotencyKey, session);
 }
 
 async function executeSimpleTask(

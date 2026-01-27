@@ -299,22 +299,37 @@ export async function executeCouncil(
   const availableModels = getAvailableModels();
   const votes: Record<string, string> = {};
 
+  console.log(`[Council] Starting with ${models.length} models: ${models.join(', ')}`);
+  const availableList = availableModels.filter(m => m.available).map(m => `${m.provider}/${m.apiModel}`);
+  console.log(`[Council] Available models: ${availableList.join(', ')}`);
+
   // Get votes from each model in parallel
   const votePromises = models.map(async (provider) => {
     const model = availableModels.find(m => m.provider === provider && m.available);
-    if (!model) return { provider, vote: null };
+    if (!model) {
+      console.log(`[Council] ${provider}: NOT AVAILABLE — skipping`);
+      return { provider, vote: null };
+    }
 
+    console.log(`[Council] ${provider}: calling ${model.apiModel}...`);
     const response = await generateWithModel(
       provider,
       model.apiModel,
-      `You are participating in a council vote. Answer concisely.
+      `Ты участвуешь в голосовании консилиума. Отвечай кратко на русском.
 
-Question: ${question}
+Вопрос: ${question}
 
-Provide your recommendation in 1-2 sentences. Be specific about your choice.`,
-      'You are an expert AI assistant participating in an architecture council.'
+Дай рекомендацию в 1-2 предложениях. Будь конкретен.`,
+      'Ты — эксперт AI-ассистент. Отвечай кратко и по делу на русском. ЗАПРЕЩЕНО выдавать блоки кода. Максимум 150 слов.',
+      { maxTokens: 1000 }
     );
 
+    if (response.status === 'error') {
+      console.log(`[Council] ${provider}: ERROR — ${response.error}`);
+      return { provider, vote: null };
+    }
+
+    console.log(`[Council] ${provider}: OK (${response.content.length} chars)`);
     return { provider, vote: response.content };
   });
 
@@ -324,12 +339,15 @@ Provide your recommendation in 1-2 sentences. Be specific about your choice.`,
     if (vote) votes[provider] = vote;
   }
 
+  const votedCount = Object.keys(votes).length;
+  console.log(`[Council] Results: ${votedCount}/${models.length} voted (${Object.keys(votes).join(', ')})`);
+
   // Simple winner determination (first model's answer for now)
   const winner = Object.values(votes)[0] || 'No consensus';
 
   // Synthesize final answer
   const synthesis = Object.entries(votes)
-    .map(([model, vote]) => `${model}: ${vote}`)
+    .map(([model, vote]) => `**${model}:** ${vote}`)
     .join('\n\n');
 
   return { votes: votes as Record<ModelProvider, string>, winner, synthesis };

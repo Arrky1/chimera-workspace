@@ -51,9 +51,10 @@ function markProviderFailure(provider: ModelProvider, error: string): void {
   health.lastError = Date.now();
   health.consecutiveFailures++;
   health.errorMessage = error;
-  // Mark unhealthy after 3 consecutive failures
-  if (health.consecutiveFailures >= 3) {
+  // Mark unhealthy after 5 consecutive failures (более мягкий порог)
+  if (health.consecutiveFailures >= 5) {
     health.isHealthy = false;
+    console.log(`[Health] ${provider} marked UNHEALTHY after ${health.consecutiveFailures} failures: ${error}`);
   }
   providerHealth.set(provider, health);
 }
@@ -175,12 +176,12 @@ export const MODELS: ModelConfig[] = [
     strengths: ['fast', 'reasoning', 'code'],
     available: false,
   },
-  // Google Gemini models
+  // Google Gemini models (stable IDs — January 2026)
   {
     id: 'gemini-2.5-pro',
     provider: 'gemini',
     name: 'Gemini 2.5 Pro',
-    apiModel: 'gemini-2.5-pro-preview-05-06',
+    apiModel: 'gemini-2.5-pro',
     strengths: ['fast', 'multimodal', 'long_context', 'code', 'reasoning'],
     available: false,
   },
@@ -188,7 +189,7 @@ export const MODELS: ModelConfig[] = [
     id: 'gemini-2.5-flash',
     provider: 'gemini',
     name: 'Gemini 2.5 Flash',
-    apiModel: 'gemini-2.5-flash-preview-05-20',
+    apiModel: 'gemini-2.5-flash',
     strengths: ['fast', 'multimodal', 'value'],
     available: false,
   },
@@ -311,13 +312,16 @@ export async function generateWithModel(
   const timeout = options?.timeout || PROVIDER_TIMEOUTS[provider] || DEFAULT_TIMEOUT_MS;
   const maxTokens = options?.maxTokens || 4096;
 
+  console.log(`[Model] Calling ${provider}/${modelId} (maxTokens=${maxTokens}, timeout=${timeout}ms)`);
+
   // Check provider health (skip if explicitly told to)
   if (!options?.skipHealthCheck) {
     const health = getProviderHealth(provider);
     if (!health.isHealthy) {
-      // Provider is unhealthy, but allow retry after 5 minutes
+      // Provider is unhealthy, but allow retry after 1 minute
       const timeSinceLastError = Date.now() - health.lastError;
-      if (timeSinceLastError < 5 * 60 * 1000) {
+      if (timeSinceLastError < 60 * 1000) {
+        console.log(`[Model] ${provider} blocked by health check (${health.consecutiveFailures} failures, ${Math.round(timeSinceLastError / 1000)}s ago)`);
         return {
           model: provider,
           modelId,
@@ -327,6 +331,9 @@ export async function generateWithModel(
           latency: Date.now() - startTime,
         };
       }
+      // Reset health after cooldown — give it another chance
+      console.log(`[Model] ${provider} cooldown expired, resetting health`);
+      markProviderSuccess(provider);
     }
   }
 
@@ -350,15 +357,30 @@ export async function generateWithModel(
 
         case 'openai': {
           const client = getOpenAIClient();
-          const response = await client.chat.completions.create({
-            model: modelId,
-            messages: [
-              ...(systemPrompt ? [{ role: 'system' as const, content: systemPrompt }] : []),
-              { role: 'user', content: prompt },
-            ],
-            max_tokens: maxTokens,
-          });
-          content = response.choices[0]?.message?.content || '';
+          // Reasoning models (o3, o4-mini) не поддерживают max_tokens и system role
+          const isReasoningModel = modelId.startsWith('o3') || modelId.startsWith('o4');
+
+          if (isReasoningModel) {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const response = await (client.chat.completions.create as any)({
+              model: modelId,
+              messages: [
+                { role: 'user', content: systemPrompt ? `${systemPrompt}\n\n${prompt}` : prompt },
+              ],
+              max_completion_tokens: maxTokens,
+            });
+            content = response.choices[0]?.message?.content || '';
+          } else {
+            const response = await client.chat.completions.create({
+              model: modelId,
+              messages: [
+                ...(systemPrompt ? [{ role: 'system' as const, content: systemPrompt }] : []),
+                { role: 'user' as const, content: prompt },
+              ],
+              max_tokens: maxTokens,
+            });
+            content = response.choices[0]?.message?.content || '';
+          }
           break;
         }
 
@@ -447,16 +469,20 @@ export async function generateWithModel(
     // Mark provider as healthy
     markProviderSuccess(provider);
 
+    const latency = Date.now() - startTime;
+    console.log(`[Model] ✅ ${provider}/${modelId} completed in ${latency}ms (${content.length} chars)`);
+
     return {
       model: provider,
       modelId,
       content,
       thinking,
       status: 'completed',
-      latency: Date.now() - startTime,
+      latency,
     };
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));
+    console.error(`[Model] ❌ ${provider}/${modelId} FAILED: ${err.message}`);
 
     // Mark provider failure
     markProviderFailure(provider, err.message);
