@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import dynamic from 'next/dynamic';
 import {
   Header,
   ChatInput,
@@ -8,12 +9,17 @@ import {
   ProjectsDashboard,
   ActivityFeed,
   useActivityFeed,
-  OrchestrationGraph,
   ModelContributionStats,
   EventLog,
   useEventLog,
 } from '@/components';
 import type { ModelActivity } from '@/components';
+
+// Dynamic import for ReactFlow-based component (no SSR)
+const OrchestrationGraph = dynamic(
+  () => import('@/components/OrchestrationGraph').then(mod => mod.OrchestrationGraph),
+  { ssr: false, loading: () => <div className="h-[400px] w-full rounded-xl border border-orchestrator-border bg-orchestrator-bg flex items-center justify-center text-gray-500">Loading graph...</div> }
+);
 import { Message, ModelConfig, ClarificationRequest, ExecutionPlan, ModelProvider, ExecutionMode } from '@/types';
 import { MessageSquare, FolderGit2, Settings, Activity } from 'lucide-react';
 
