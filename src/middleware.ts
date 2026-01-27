@@ -39,7 +39,15 @@ export async function middleware(request: NextRequest) {
     return NextResponse.next();
   }
 
-  // Redirect to login page
+  // For API routes, return 401 JSON instead of redirect
+  if (request.nextUrl.pathname.startsWith('/api/')) {
+    return NextResponse.json(
+      { error: 'Unauthorized. Please re-login.' },
+      { status: 401 }
+    );
+  }
+
+  // Redirect to login page for non-API routes
   if (!request.nextUrl.pathname.startsWith('/login')) {
     return NextResponse.redirect(new URL('/login', request.url));
   }
