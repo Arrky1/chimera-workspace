@@ -61,16 +61,18 @@ ${toolsDescription}
 Для использования инструмента:
 <tool_use name="tool_name">{"param": "value"}</tool_use>
 
-## Для file_system используй путь: ${project.owner}/${project.repo}/...
-## Для github: owner="${project.owner}", repo="${project.repo}"
+## Чтение файлов проекта
+- ПРЕДПОЧТИТЕЛЬНО: github tool с action "get_file" или "list_files", owner="${project.owner}", repo="${project.repo}"
+- Альтернатива: file_system с путём ${project.owner}/${project.repo}/path/to/file
+- Если один способ не работает — сразу пробуй другой
 
 ## Инструкции
 - Отвечай КРАТКО и по делу. Не выдавай огромные блоки кода если не просят
 - Если нужен код — показывай только ключевые фрагменты (до 20 строк), не весь файл
 - Отвечай на вопросы о проекте используя контекст выше
-- Используй file_system для чтения конкретных файлов
 - Будь конкретным — называй файлы, строки, проблемы
 - Предлагай исправления с примерами кода
+- НИКОГДА не показывай пользователю сырые ошибки инструментов — если инструмент не сработал, попробуй другой подход
 - Отвечай на том языке, на котором пишет пользователь
 - Не задавай лишних вопросов — сразу действуй`;
 
@@ -91,36 +93,65 @@ ${toolsDescription}
       }, { status: 503 });
     }
 
-    // Generate response
-    const response = await generateWithModel(
-      bestModel.provider,
-      bestModel.apiModel,
-      conversationPrompt,
-      systemPrompt
-    );
+    // Agentic loop: model calls tools, gets results back, can retry on errors
+    const MAX_TOOL_ITERATIONS = 3;
+    let currentPrompt = conversationPrompt;
+    let finalContent = '';
+    let totalLatency = 0;
 
-    let finalContent = response.content;
+    for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
+      const isFollowUp = iteration > 0;
+      const iterationSystemPrompt = isFollowUp
+        ? systemPrompt + '\n\n## ВАЖНО: Ты получил результаты инструментов. Если была ошибка — попробуй другой подход (github tool вместо file_system). НЕ показывай пользователю сырые ошибки.'
+        : systemPrompt;
 
-    // Process tool calls
-    const toolCalls = parseToolCalls(finalContent);
-    if (toolCalls.length > 0) {
+      const response = await generateWithModel(
+        bestModel.provider,
+        bestModel.apiModel,
+        currentPrompt,
+        iterationSystemPrompt
+      );
+      totalLatency += response.latency || 0;
+
+      const toolCalls = parseToolCalls(response.content);
+
+      if (toolCalls.length === 0) {
+        finalContent = response.content;
+        break;
+      }
+
       const toolResults = await executeToolCalls(toolCalls);
+      const hasErrors = toolResults.some(r => !r.result.success);
+      const cleanContent = response.content.replace(/<tool_use name="\w+">[\s\S]*?<\/tool_use>/g, '').trim();
 
-      // Strip tool_use XML from visible response
-      let cleanContent = finalContent.replace(/<tool_use name="\w+">[\s\S]*?<\/tool_use>/g, '').trim();
-
-      // Format tool results
       const toolResultsText = toolResults
         .map(r => {
           if (r.result.success) {
             const data = r.result.data;
-            return typeof data === 'object' ? JSON.stringify(data, null, 2) : String(data);
+            return `[${r.toolName}]: ${typeof data === 'object' ? JSON.stringify(data, null, 2) : String(data)}`;
           }
-          return `Ошибка: ${r.result.error}`;
+          return `[${r.toolName}] ОШИБКА: ${r.result.error}`;
         })
         .join('\n\n');
 
-      finalContent = cleanContent + (toolResultsText ? `\n\n${toolResultsText}` : '');
+      if (hasErrors && iteration < MAX_TOOL_ITERATIONS - 1) {
+        currentPrompt = `${conversationPrompt}\n\nТвой ответ:\n${cleanContent}\n\nРезультаты инструментов:\n${toolResultsText}\n\nОшибки в инструментах. Попробуй другой подход:\n- file_system не работает → используй github tool с action "get_file" или "list_files", owner="${project.owner}", repo="${project.repo}"\nДай полезный результат без ошибок.`;
+        continue;
+      }
+
+      const successResults = toolResults.filter(r => r.result.success);
+      if (successResults.length > 0) {
+        const formattedResults = successResults
+          .map(r => {
+            const data = r.result.data;
+            return typeof data === 'object' ? JSON.stringify(data, null, 2) : String(data);
+          })
+          .join('\n\n');
+        finalContent = cleanContent + (formattedResults ? `\n\n${formattedResults}` : '');
+      } else {
+        finalContent = cleanContent || 'Не удалось прочитать файлы проекта. Попробуйте переформулировать запрос.';
+      }
+      break;
     }
 
     // Add assistant message to history
@@ -129,7 +160,7 @@ ${toolsDescription}
     return NextResponse.json({
       message: finalContent,
       model: bestModel.name,
-      latency: response.latency,
+      latency: totalLatency,
     });
 
   } catch (error) {

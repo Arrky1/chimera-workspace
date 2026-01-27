@@ -312,58 +312,95 @@ ${toolsDescription}
 Для использования инструмента:
 <tool_use name="tool_name">{"param": "value"}</tool_use>
 
+## Чтение файлов проекта
+- ПРЕДПОЧТИТЕЛЬНО: github tool с action "get_file" или "list_files" (надёжнее)
+- Альтернатива: file_system с путём owner/repo/path
+- Если один способ не работает — сразу пробуй другой
+
 ## Инструкции
 - Отвечай КРАТКО и по делу. Не выдавай огромные блоки кода без запроса
 - Если нужен код — показывай только ключевые фрагменты (до 20 строк), не весь файл
 - Называй файлы, строки, проблемы конкретно
-- Если пользователь спрашивает о проекте, используй контекст выше
-- Для чтения файлов проекта используй file_system с путём: owner/repo/path
-- Для GitHub API используй инструмент github
+- НИКОГДА не показывай пользователю сырые ошибки инструментов (ENOENT, Error и т.д.) — попробуй другой подход или дай ответ на основе имеющихся данных
 - Предлагай исправления с примерами кода
 - Не задавай лишних вопросов — сразу действуй`;
 
   const startTime = Date.now();
-  const response = await withRetry(() => generateWithModel(
-    bestModel.provider,
-    bestModel.apiModel,
-    message,
-    systemPrompt
-  ));
+  let totalLatency = 0;
 
-  // Record model call for audit
-  await recordModelCall(executionId, plan.phases[0].id, {
-    provider: bestModel.provider,
-    modelId: bestModel.apiModel,
-    prompt: message,
-    systemPrompt,
-    response: response.content,
-    startedAt: startTime,
-    completedAt: Date.now(),
-    latency: response.latency,
-  });
+  // Agentic loop: model calls tools, gets results back, can retry on errors
+  const MAX_TOOL_ITERATIONS = 3;
+  let currentPrompt = message;
+  let finalContent = '';
+  const allToolsUsed: string[] = [];
 
-  // Process any tool calls in the response
-  const toolCalls = parseToolCalls(response.content);
-  let finalContent = response.content;
+  for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
+    const isFollowUp = iteration > 0;
+    const iterationSystemPrompt = isFollowUp
+      ? systemPrompt + '\n\n## ВАЖНО: Ты получил результаты инструментов. Если инструмент вернул ошибку — попробуй другой подход (github tool вместо file_system). НЕ показывай пользователю сырые ошибки — исправь ситуацию сам и дай полезный результат.'
+      : systemPrompt;
 
-  if (toolCalls.length > 0) {
+    const response = await withRetry(() => generateWithModel(
+      bestModel.provider,
+      bestModel.apiModel,
+      currentPrompt,
+      iterationSystemPrompt
+    ));
+    totalLatency += response.latency || 0;
+
+    await recordModelCall(executionId, plan.phases[0].id, {
+      provider: bestModel.provider,
+      modelId: bestModel.apiModel,
+      prompt: currentPrompt,
+      systemPrompt: iterationSystemPrompt,
+      response: response.content,
+      startedAt: startTime,
+      completedAt: Date.now(),
+      latency: response.latency,
+    });
+
+    const toolCalls = parseToolCalls(response.content);
+
+    if (toolCalls.length === 0) {
+      finalContent = response.content;
+      break;
+    }
+
+    allToolsUsed.push(...toolCalls.map(t => t.toolName));
     const toolResults = await executeToolCalls(toolCalls);
+    const hasErrors = toolResults.some(r => !r.result.success);
+    const cleanContent = response.content.replace(/<tool_use name="\w+">[\s\S]*?<\/tool_use>/g, '').trim();
 
-    // Strip <tool_use> XML tags from visible response
-    let cleanContent = finalContent.replace(/<tool_use name="\w+">[\s\S]*?<\/tool_use>/g, '').trim();
-
-    // Format tool results readably
     const toolResultsText = toolResults
       .map(r => {
         if (r.result.success) {
           const data = r.result.data;
-          return typeof data === 'object' ? JSON.stringify(data, null, 2) : String(data);
+          return `[${r.toolName}]: ${typeof data === 'object' ? JSON.stringify(data, null, 2) : String(data)}`;
         }
-        return `Error: ${r.result.error}`;
+        return `[${r.toolName}] ОШИБКА: ${r.result.error}`;
       })
       .join('\n\n');
 
-    finalContent = cleanContent + (toolResultsText ? `\n\n${toolResultsText}` : '');
+    if (hasErrors && iteration < MAX_TOOL_ITERATIONS - 1) {
+      // Errors — feed back to model for recovery
+      currentPrompt = `Исходный запрос пользователя: ${message}\n\nТвой ответ:\n${cleanContent}\n\nРезультаты инструментов:\n${toolResultsText}\n\nНекоторые инструменты вернули ошибки. Попробуй другой подход:\n- Если file_system не нашёл файл — используй github tool с action "get_file" или "list_files"\n- Если github не работает — дай ответ на основе имеющихся данных\nНЕ показывай ошибки пользователю — дай полезный результат.`;
+      continue;
+    }
+
+    // Format successful results into response (don't show raw JSON to user)
+    const successResults = toolResults.filter(r => r.result.success);
+    if (successResults.length > 0) {
+      const formattedResults = successResults
+        .map(r => {
+          const data = r.result.data;
+          return typeof data === 'object' ? JSON.stringify(data, null, 2) : String(data);
+        })
+        .join('\n\n');
+      finalContent = cleanContent + (formattedResults ? `\n\n${formattedResults}` : '');
+    } else {
+      finalContent = cleanContent || 'Не удалось выполнить запрос. Попробуйте переформулировать задачу.';
+    }
+    break;
   }
 
   // Update plan status
@@ -371,7 +408,6 @@ ${toolsDescription}
   plan.phases[0].status = 'completed';
   plan.phases[0].progress = 100;
 
-  // Complete phase in execution store
   await completePhase(executionId, plan.phases[0].id, { content: finalContent });
 
   return NextResponse.json({
@@ -379,8 +415,8 @@ ${toolsDescription}
     message: finalContent,
     plan,
     modelUsed: bestModel.name,
-    latency: response.latency,
-    toolsUsed: toolCalls.length > 0 ? toolCalls.map(t => t.toolName) : undefined,
+    latency: totalLatency,
+    toolsUsed: allToolsUsed.length > 0 ? allToolsUsed : undefined,
     executionId,
   });
 }
