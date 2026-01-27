@@ -5,8 +5,20 @@ import {
   getProject, getProjectContextSummary,
   getChatHistory, addChatMessage,
 } from '@/lib/project-store';
+import { buildConversationContext } from '@/lib/chat-store';
 import * as fs from 'fs/promises';
 import * as path from 'path';
+
+// Strip code blocks as safety net
+function stripCodeBlocks(content: string): string {
+  let cleaned = content.replace(/```[\s\S]*?```/g, '');
+  cleaned = cleaned.replace(/`[^`]{50,}`/g, '');
+  cleaned = cleaned.replace(/\n\s*\{[\s\S]{100,}?\}\s*$/g, '');
+  cleaned = cleaned.replace(/\n\s*\[[\s\S]{100,}?\]\s*$/g, '');
+  cleaned = cleaned.replace(/<tool_use[\s\S]*?<\/tool_use>/g, '');
+  cleaned = cleaned.replace(/\n{3,}/g, '\n\n');
+  return cleaned.trim();
+}
 
 export async function POST(request: NextRequest) {
   try {
@@ -32,10 +44,12 @@ export async function POST(request: NextRequest) {
     // Get project context
     const projectContext = getProjectContextSummary(projectId);
 
+    // Get main chat context (to preserve continuity between main chat and project chat)
+    const mainChatContext = buildConversationContext('main', 5);
+
     // Try to get file listing from cloned repo
     let fileStructure = '';
     try {
-      // Sanitize owner/repo to prevent path traversal
       const safeOwner = path.basename(project.owner);
       const safeRepo = path.basename(project.repo);
       const reposDir = path.resolve(process.cwd(), '.chimera-repos');
@@ -49,11 +63,13 @@ export async function POST(request: NextRequest) {
       // Repo not available locally
     }
 
-    // Build system prompt with full project context
+    // ── ЭТАП 1: РАБОЧИЙ (work) ──────────────────────────────────────────
     const toolsDescription = getToolDescriptions();
-    const systemPrompt = `Ты — Chimera AI, мультимодельный ассистент для анализа кода. Ты работаешь в контексте конкретного проекта и знаешь его код, проблемы и метрики.
+    const workSystemPrompt = `Ты — Chimera AI, рабочий агент для анализа кода. Контекст проекта:
 
 ${projectContext || 'Данные проекта ещё загружаются.'}${fileStructure}
+
+${mainChatContext ? `## Контекст основного чата\n${mainChatContext}\n` : ''}
 
 ## Доступные инструменты
 ${toolsDescription}
@@ -67,16 +83,13 @@ ${toolsDescription}
 - Если один способ не работает — сразу пробуй другой
 
 ## Инструкции
-- Отвечай КРАТКО и по делу. Не выдавай огромные блоки кода если не просят
-- Если нужен код — показывай только ключевые фрагменты (до 20 строк), не весь файл
-- Отвечай на вопросы о проекте используя контекст выше
-- Будь конкретным — называй файлы, строки, проблемы
-- Предлагай исправления с примерами кода
-- НИКОГДА не показывай пользователю сырые ошибки инструментов — если инструмент не сработал, попробуй другой подход
+- Выполняй задачу полностью — используй инструменты для получения данных
+- Код, JSON, технические детали — МОЖНО, это внутренний рабочий контекст
+- Если инструмент вернул ошибку — попробуй другой подход
 - Отвечай на том языке, на котором пишет пользователь
-- Не задавай лишних вопросов — сразу действуй`;
+- Не задавай лишних вопросов — действуй`;
 
-    // Build conversation from history (last 10 messages)
+    // Build conversation from project chat history
     const history = getChatHistory(projectId);
     const recentHistory = history.slice(-10);
     const conversationPrompt = recentHistory
@@ -93,17 +106,17 @@ ${toolsDescription}
       }, { status: 503 });
     }
 
-    // Agentic loop: model calls tools, gets results back, can retry on errors
     const MAX_TOOL_ITERATIONS = 3;
     let currentPrompt = conversationPrompt;
-    let finalContent = '';
     let totalLatency = 0;
+    const workContextParts: string[] = [];
+    let usedTools = false;
 
     for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
       const isFollowUp = iteration > 0;
       const iterationSystemPrompt = isFollowUp
-        ? systemPrompt + '\n\n## ВАЖНО: Ты получил результаты инструментов. Если была ошибка — попробуй другой подход (github tool вместо file_system). НЕ показывай пользователю сырые ошибки.'
-        : systemPrompt;
+        ? workSystemPrompt + '\n\nТы получил результаты инструментов. Если ошибка — попробуй другой подход. Если данные есть — дай полный ответ.'
+        : workSystemPrompt;
 
       const response = await generateWithModel(
         bestModel.provider,
@@ -116,43 +129,92 @@ ${toolsDescription}
       const toolCalls = parseToolCalls(response.content);
 
       if (toolCalls.length === 0) {
-        finalContent = response.content;
+        workContextParts.push(`Ответ модели:\n${response.content}`);
         break;
       }
 
+      usedTools = true;
       const toolResults = await executeToolCalls(toolCalls);
       const hasErrors = toolResults.some(r => !r.result.success);
       const cleanContent = response.content.replace(/<tool_use name="\w+">[\s\S]*?<\/tool_use>/g, '').trim();
+
+      if (cleanContent) {
+        workContextParts.push(`Размышления модели:\n${cleanContent}`);
+      }
 
       const toolResultsText = toolResults
         .map(r => {
           if (r.result.success) {
             const data = r.result.data;
-            return `[${r.toolName}]: ${typeof data === 'object' ? JSON.stringify(data, null, 2) : String(data)}`;
+            const dataStr = typeof data === 'object' ? JSON.stringify(data, null, 2) : String(data);
+            return `[${r.toolName}]: ${dataStr.length > 2000 ? dataStr.slice(0, 2000) + '... [обрезано]' : dataStr}`;
           }
           return `[${r.toolName}] ОШИБКА: ${r.result.error}`;
         })
         .join('\n\n');
 
-      if (hasErrors && iteration < MAX_TOOL_ITERATIONS - 1) {
-        currentPrompt = `${conversationPrompt}\n\nТвой ответ:\n${cleanContent}\n\nРезультаты инструментов:\n${toolResultsText}\n\nОшибки в инструментах. Попробуй другой подход:\n- file_system не работает → используй github tool с action "get_file" или "list_files", owner="${project.owner}", repo="${project.repo}"\nДай полезный результат без ошибок.`;
+      workContextParts.push(`Результаты инструментов:\n${toolResultsText}`);
+
+      if (iteration < MAX_TOOL_ITERATIONS - 1) {
+        const errorNote = hasErrors
+          ? `\nОшибки. Попробуй другой подход: github tool с owner="${project.owner}", repo="${project.repo}".`
+          : '\nДанные получены. Если нужно ещё — используй инструменты. Если достаточно — дай ответ.';
+        currentPrompt = `Исходный запрос: ${message}\n\nТвой ответ:\n${cleanContent}\n\nРезультаты:\n${toolResultsText}${errorNote}`;
         continue;
       }
 
-      const successResults = toolResults.filter(r => r.result.success);
-      if (successResults.length > 0) {
-        const formattedResults = successResults
-          .map(r => {
-            const data = r.result.data;
-            return typeof data === 'object' ? JSON.stringify(data, null, 2) : String(data);
-          })
-          .join('\n\n');
-        finalContent = cleanContent + (formattedResults ? `\n\n${formattedResults}` : '');
-      } else {
-        finalContent = cleanContent || 'Не удалось прочитать файлы проекта. Попробуйте переформулировать запрос.';
+      if (cleanContent) {
+        workContextParts.push(`Финальный ответ:\n${cleanContent}`);
       }
-      break;
     }
+
+    // ── ЭТАП 2: ФИНАЛИЗАЦИЯ (finalize) ──────────────────────────────────
+    const workContext = workContextParts.join('\n\n---\n\n');
+
+    const finalizeSystemPrompt = `Ты — Chimera AI. Сформулируй чистый, понятный ответ пользователю о проекте ${project.name} (${project.owner}/${project.repo}).
+
+## Правила
+- Отвечай на том языке, на котором пишет пользователь
+- МАКСИМУМ 200 слов. Кратко, по делу
+- Называй конкретные файлы, функции, проблемы
+- НЕ задавай вопросов, если можешь ответить сам
+
+## СТРОГО ЗАПРЕЩЕНО
+- Блоки кода (\`\`\`)
+- Сырой JSON
+- Показ ошибок инструментов
+- Повторение содержимого файлов дословно
+
+## Формат
+Краткий ответ + 2-3 следующих шага:
+
+**Что дальше:**
+• [действие]
+• [действие]`;
+
+    const finalizePrompt = `Запрос пользователя: ${message}
+
+Рабочий контекст (НЕ показывай напрямую):
+---
+${workContext.slice(0, 6000)}
+---
+
+Сформулируй чистый ответ.`;
+
+    const finalizeResponse = await generateWithModel(
+      bestModel.provider,
+      bestModel.apiModel,
+      finalizePrompt,
+      finalizeSystemPrompt
+    );
+    totalLatency += finalizeResponse.latency || 0;
+
+    let finalContent = stripCodeBlocks(finalizeResponse.content || '');
+    if (!finalContent.trim()) {
+      finalContent = 'Задача обработана, но не удалось сформулировать ответ. Попробуйте переформулировать запрос.';
+    }
+
+    console.log(`[ProjectChat] ${project.owner}/${project.repo}: tools=${usedTools}, finalized=${finalContent.length} chars`);
 
     // Add assistant message to history
     addChatMessage(projectId, { role: 'assistant', content: finalContent, timestamp: Date.now() });

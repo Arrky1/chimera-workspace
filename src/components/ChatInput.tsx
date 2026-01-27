@@ -1,7 +1,7 @@
 'use client';
 
-import { useState, useRef, KeyboardEvent } from 'react';
-import { Send, Image, Paperclip, Mic, Loader2 } from 'lucide-react';
+import { useState, useRef, useEffect, useCallback, KeyboardEvent } from 'react';
+import { Send, Image, Paperclip, Mic, MicOff, Loader2 } from 'lucide-react';
 
 interface ChatInputProps {
   onSubmit: (message: string, attachments?: File[]) => void;
@@ -16,8 +16,53 @@ export function ChatInput({ onSubmit, isProcessing, placeholder, value, onChange
   const input = value !== undefined ? value : localInput;
   const setInput = onChange || setLocalInput;
   const [attachments, setAttachments] = useState<File[]>([]);
+  const [isListening, setIsListening] = useState(false);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const recognitionRef = useRef<any>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Web Speech API for voice input
+  const toggleVoice = useCallback(() => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const win = window as any;
+    if (!win.webkitSpeechRecognition && !win.SpeechRecognition) {
+      alert('Голосовой ввод не поддерживается в этом браузере');
+      return;
+    }
+
+    if (isListening) {
+      recognitionRef.current?.stop();
+      setIsListening(false);
+      return;
+    }
+
+    const SpeechRecognitionAPI = win.SpeechRecognition || win.webkitSpeechRecognition;
+    const recognition = new SpeechRecognitionAPI();
+    recognition.lang = 'ru-RU';
+    recognition.continuous = true;
+    recognition.interimResults = true;
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    recognition.onresult = (event: any) => {
+      let transcript = '';
+      for (let i = 0; i < event.results.length; i++) {
+        transcript += event.results[i][0].transcript;
+      }
+      setInput(transcript);
+    };
+
+    recognition.onerror = () => setIsListening(false);
+    recognition.onend = () => setIsListening(false);
+
+    recognitionRef.current = recognition;
+    recognition.start();
+    setIsListening(true);
+  }, [isListening, setInput]);
+
+  useEffect(() => {
+    return () => { recognitionRef.current?.stop(); };
+  }, []);
 
   const handleSubmit = () => {
     if (!input.trim() && attachments.length === 0) return;
@@ -121,11 +166,15 @@ export function ChatInput({ onSubmit, isProcessing, placeholder, value, onChange
             </button>
 
             <button
-              className="rounded-lg p-2 text-gray-400 transition-colors hover:bg-orchestrator-border hover:text-white"
-              title="Голосовой ввод (скоро)"
-              disabled
+              onClick={toggleVoice}
+              className={`rounded-lg p-2 transition-colors ${
+                isListening
+                  ? 'bg-red-500/20 text-red-400 hover:bg-red-500/30'
+                  : 'text-gray-400 hover:bg-orchestrator-border hover:text-white'
+              }`}
+              title={isListening ? 'Остановить запись' : 'Голосовой ввод'}
             >
-              <Mic size={18} />
+              {isListening ? <MicOff size={18} /> : <Mic size={18} />}
             </button>
           </div>
         </div>

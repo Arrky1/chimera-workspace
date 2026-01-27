@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Plus,
   RefreshCw,
@@ -22,6 +22,8 @@ import {
   MessageSquare,
   Send,
   FileText,
+  Mic,
+  MicOff,
 } from 'lucide-react';
 import { Project, ProjectAnalysis, ProjectIssue } from '@/types/project';
 
@@ -50,8 +52,53 @@ export function ProjectsDashboard() {
   const [chatMessages, setChatMessages] = useState<Record<string, ProjectChatMessage[]>>({});
   const [chatInput, setChatInput] = useState('');
   const [isChatProcessing, setIsChatProcessing] = useState(false);
+  const [isListening, setIsListening] = useState(false);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const recognitionRef = useRef<any>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const chatInputRef = useRef<HTMLTextAreaElement>(null);
+
+  // Voice input handler
+  const toggleVoice = useCallback(() => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const win = window as any;
+    if (!win.webkitSpeechRecognition && !win.SpeechRecognition) {
+      alert('Голосовой ввод не поддерживается в этом браузере');
+      return;
+    }
+
+    if (isListening) {
+      recognitionRef.current?.stop();
+      setIsListening(false);
+      return;
+    }
+
+    const SpeechRecognitionAPI = win.SpeechRecognition || win.webkitSpeechRecognition;
+    const recognition = new SpeechRecognitionAPI();
+    recognition.lang = 'ru-RU';
+    recognition.continuous = true;
+    recognition.interimResults = true;
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    recognition.onresult = (event: any) => {
+      let transcript = '';
+      for (let i = 0; i < event.results.length; i++) {
+        transcript += event.results[i][0].transcript;
+      }
+      setChatInput(transcript);
+    };
+
+    recognition.onerror = () => setIsListening(false);
+    recognition.onend = () => setIsListening(false);
+
+    recognitionRef.current = recognition;
+    recognition.start();
+    setIsListening(true);
+  }, [isListening]);
+
+  useEffect(() => {
+    return () => { recognitionRef.current?.stop(); };
+  }, []);
 
   // Fetch projects on mount
   useEffect(() => {
@@ -675,13 +722,13 @@ export function ProjectsDashboard() {
                     <div className="flex-1 flex items-center justify-center h-full">
                       <div className="text-center text-gray-500 py-12">
                         <MessageSquare size={48} className="mx-auto mb-4 opacity-30" />
-                        <p className="text-lg font-medium text-gray-400">Project Chat</p>
+                        <p className="text-lg font-medium text-gray-400">Чат проекта</p>
                         <p className="text-sm mt-2 max-w-md">
-                          Ask questions about <span className="text-white">{selectedProject.name}</span> —
-                          issues, code structure, architecture, or request specific fixes.
+                          Задавай вопросы о <span className="text-white">{selectedProject.name}</span> —
+                          проблемы, архитектура, код, рекомендации по улучшению.
                         </p>
                         <div className="mt-4 flex flex-wrap gap-2 justify-center">
-                          {['What are the critical issues?', 'Explain the architecture', 'How can I improve performance?'].map(q => (
+                          {['Какие критичные проблемы?', 'Опиши архитектуру', 'Как улучшить производительность?'].map(q => (
                             <button
                               key={q}
                               onClick={() => {
@@ -725,7 +772,7 @@ export function ProjectsDashboard() {
                       <div className="bg-orchestrator-card border border-orchestrator-border rounded-2xl rounded-bl-md px-4 py-3">
                         <div className="flex items-center gap-2">
                           <Loader2 size={14} className="animate-spin text-orchestrator-accent" />
-                          <span className="text-sm text-gray-400">Thinking...</span>
+                          <span className="text-sm text-gray-400">Думаю...</span>
                         </div>
                       </div>
                     </div>
@@ -736,33 +783,45 @@ export function ProjectsDashboard() {
 
                 {/* Chat Input */}
                 <div className="border-t border-orchestrator-border bg-orchestrator-card p-4">
-                  <div className="flex gap-3">
+                  <div className="flex gap-2">
                     <textarea
                       ref={chatInputRef}
                       value={chatInput}
                       onChange={(e) => {
                         setChatInput(e.target.value);
-                        // Auto-resize
                         e.target.style.height = 'auto';
                         e.target.style.height = Math.min(e.target.scrollHeight, 160) + 'px';
                       }}
                       onKeyDown={handleChatKeyDown}
-                      placeholder={`Ask about ${selectedProject.name}...`}
-                      rows={3}
+                      placeholder={`Спроси о ${selectedProject.name}...`}
+                      rows={2}
                       className="flex-1 resize-none rounded-xl border border-orchestrator-border bg-orchestrator-bg px-4 py-3 text-sm text-white placeholder-gray-500 focus:border-orchestrator-accent focus:outline-none"
-                      style={{ minHeight: '80px', maxHeight: '160px' }}
+                      style={{ minHeight: '56px', maxHeight: '160px' }}
                     />
-                    <button
-                      onClick={sendChatMessage}
-                      disabled={!chatInput.trim() || isChatProcessing}
-                      className="self-end rounded-xl bg-orchestrator-accent p-3 text-white hover:bg-orchestrator-accent-hover disabled:opacity-50 transition-all"
-                    >
-                      {isChatProcessing ? (
-                        <Loader2 size={18} className="animate-spin" />
-                      ) : (
-                        <Send size={18} />
-                      )}
-                    </button>
+                    <div className="flex flex-col gap-1 self-end">
+                      <button
+                        onClick={toggleVoice}
+                        className={`rounded-xl p-2.5 transition-all ${
+                          isListening
+                            ? 'bg-red-500/20 text-red-400 hover:bg-red-500/30'
+                            : 'text-gray-400 border border-orchestrator-border hover:text-white hover:border-gray-500'
+                        }`}
+                        title={isListening ? 'Остановить' : 'Голос'}
+                      >
+                        {isListening ? <MicOff size={16} /> : <Mic size={16} />}
+                      </button>
+                      <button
+                        onClick={sendChatMessage}
+                        disabled={!chatInput.trim() || isChatProcessing}
+                        className="rounded-xl bg-orchestrator-accent p-2.5 text-white hover:bg-orchestrator-accent-hover disabled:opacity-50 transition-all"
+                      >
+                        {isChatProcessing ? (
+                          <Loader2 size={16} className="animate-spin" />
+                        ) : (
+                          <Send size={16} />
+                        )}
+                      </button>
+                    </div>
                   </div>
                 </div>
               </div>
