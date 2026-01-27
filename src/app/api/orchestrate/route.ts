@@ -318,12 +318,21 @@ To use a tool, format your response as:
   if (toolCalls.length > 0) {
     const toolResults = await executeToolCalls(toolCalls);
 
-    // Append tool results to response
-    const toolResultsText = toolResults
-      .map(r => `Tool ${r.toolName}: ${r.result.success ? JSON.stringify(r.result.data) : r.result.error}`)
-      .join('\n');
+    // Strip <tool_use> XML tags from visible response
+    let cleanContent = finalContent.replace(/<tool_use name="\w+">[\s\S]*?<\/tool_use>/g, '').trim();
 
-    finalContent = `${response.content}\n\n---\nTool Results:\n${toolResultsText}`;
+    // Format tool results readably
+    const toolResultsText = toolResults
+      .map(r => {
+        if (r.result.success) {
+          const data = r.result.data;
+          return typeof data === 'object' ? JSON.stringify(data, null, 2) : String(data);
+        }
+        return `Error: ${r.result.error}`;
+      })
+      .join('\n\n');
+
+    finalContent = cleanContent + (toolResultsText ? `\n\n${toolResultsText}` : '');
   }
 
   // Update plan status

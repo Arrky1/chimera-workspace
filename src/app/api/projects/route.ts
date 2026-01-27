@@ -3,12 +3,12 @@ import { cloneRepo, getRepoInfo, parseGitHubUrl, createBranch, commitChanges, pu
 import { scanProject, runAnalysis } from '@/lib/analysis';
 import { generateSummary } from '@/lib/analysis/report';
 import { Project, ProjectAnalysis, ProjectIssue, FixRequest, FixResult } from '@/types/project';
+import {
+  getProject, getAllProjects, setProject, deleteProject, hasProject,
+  getAnalysis, setAnalysis,
+} from '@/lib/project-store';
 import * as fs from 'fs/promises';
 import * as path from 'path';
-
-// In-memory storage (use DB in production)
-const projects = new Map<string, Project>();
-const analyses = new Map<string, ProjectAnalysis>();
 
 function getGitHubToken(): string | undefined {
   return process.env.GITHUB_TOKEN;
@@ -19,21 +19,16 @@ export async function GET(request: NextRequest) {
   const projectId = url.searchParams.get('id');
 
   if (projectId) {
-    const project = projects.get(projectId);
+    const project = getProject(projectId);
     if (!project) {
       return NextResponse.json({ error: 'Project not found' }, { status: 404 });
     }
 
-    const analysis = analyses.get(projectId);
+    const analysis = getAnalysis(projectId);
     return NextResponse.json({ project, analysis });
   }
 
-  // Return all projects
-  const projectList = Array.from(projects.values()).sort(
-    (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
-  );
-
-  return NextResponse.json({ projects: projectList });
+  return NextResponse.json({ projects: getAllProjects() });
 }
 
 export async function POST(request: NextRequest) {
@@ -44,16 +39,12 @@ export async function POST(request: NextRequest) {
     switch (action) {
       case 'add':
         return addProject(body.githubUrl);
-
       case 'analyze':
         return analyzeProject(body.projectId);
-
       case 'fix':
         return fixIssues(body as FixRequest);
-
       case 'remove':
         return removeProject(body.projectId);
-
       default:
         return NextResponse.json({ error: 'Unknown action' }, { status: 400 });
     }
@@ -74,17 +65,12 @@ async function addProject(githubUrl: string) {
     return NextResponse.json({ error: 'Invalid GitHub URL' }, { status: 400 });
   }
 
-  // Check if already added
-  const existing = Array.from(projects.values()).find(
-    p => p.githubUrl === parsed.url
-  );
+  const existing = hasProject(parsed.url);
   if (existing) {
     return NextResponse.json({ error: 'Project already added', projectId: existing.id }, { status: 400 });
   }
 
-  // Get repo info from GitHub API
   const repoInfo = await getRepoInfo(githubUrl, token);
-
   if (!repoInfo) {
     return NextResponse.json(
       { error: 'Cannot access repository. Make sure it exists and GITHUB_TOKEN is set for private repos.' },
@@ -92,7 +78,6 @@ async function addProject(githubUrl: string) {
     );
   }
 
-  // Create project
   const projectId = `proj-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const project: Project = {
     id: projectId,
@@ -109,9 +94,7 @@ async function addProject(githubUrl: string) {
     updatedAt: new Date(),
   };
 
-  projects.set(projectId, project);
-
-  // Clone in background
+  setProject(projectId, project);
   cloneAndAnalyze(project);
 
   return NextResponse.json({
@@ -125,7 +108,6 @@ async function cloneAndAnalyze(project: Project) {
   const token = getGitHubToken();
 
   try {
-    // Clone
     project.status = 'cloning';
     project.updatedAt = new Date();
 
@@ -138,7 +120,6 @@ async function cloneAndAnalyze(project: Project) {
       return;
     }
 
-    // Analyze
     project.status = 'analyzing';
     project.updatedAt = new Date();
 
@@ -146,8 +127,6 @@ async function cloneAndAnalyze(project: Project) {
     const issues = await runAnalysis(projectInfo, ['security', 'performance', 'code_quality', 'architecture']);
     const summary = generateSummary(issues);
 
-    // Convert to ProjectIssue format
-    // Map AnalysisIssue.type to ProjectIssue.category
     const typeToCategory = (type: string): ProjectIssue['category'] => {
       const mapping: Record<string, ProjectIssue['category']> = {
         'security': 'security',
@@ -179,7 +158,6 @@ async function cloneAndAnalyze(project: Project) {
       status: 'open',
     }));
 
-    // Calculate scores
     const categoryScores = {
       security: 100,
       performance: 100,
@@ -210,9 +188,8 @@ async function cloneAndAnalyze(project: Project) {
       },
     };
 
-    analyses.set(project.id, analysis);
+    setAnalysis(project.id, analysis);
 
-    // Update project
     project.status = 'ready';
     project.healthScore = summary.healthScore;
     project.issuesCount = projectIssues.length;
@@ -227,7 +204,7 @@ async function cloneAndAnalyze(project: Project) {
 }
 
 async function analyzeProject(projectId: string) {
-  const project = projects.get(projectId);
+  const project = getProject(projectId);
   if (!project) {
     return NextResponse.json({ error: 'Project not found' }, { status: 404 });
   }
@@ -236,24 +213,20 @@ async function analyzeProject(projectId: string) {
     return NextResponse.json({ error: 'Analysis already in progress' }, { status: 400 });
   }
 
-  // Re-analyze
   project.status = 'analyzing';
   project.updatedAt = new Date();
   cloneAndAnalyze(project);
 
-  return NextResponse.json({
-    success: true,
-    message: 'Re-analysis started',
-  });
+  return NextResponse.json({ success: true, message: 'Re-analysis started' });
 }
 
 async function fixIssues(request: FixRequest) {
-  const project = projects.get(request.projectId);
+  const project = getProject(request.projectId);
   if (!project) {
     return NextResponse.json({ error: 'Project not found' }, { status: 404 });
   }
 
-  const analysis = analyses.get(request.projectId);
+  const analysis = getAnalysis(request.projectId);
   if (!analysis) {
     return NextResponse.json({ error: 'No analysis found. Run analysis first.' }, { status: 400 });
   }
@@ -266,7 +239,6 @@ async function fixIssues(request: FixRequest) {
   const reposDir = path.join(process.cwd(), '.chimera-repos');
   const localPath = path.join(reposDir, project.owner, project.repo);
 
-  // Get issues to fix
   const issuesToFix = analysis.issues.filter(
     i => request.issueIds.includes(i.id) && i.canAutoFix && i.fix
   );
@@ -284,11 +256,9 @@ async function fixIssues(request: FixRequest) {
   };
 
   try {
-    // Create branch for fixes
     const branchName = `chimera-fixes-${Date.now()}`;
     await createBranch(localPath, branchName);
 
-    // Apply fixes
     for (const issue of issuesToFix) {
       try {
         if (issue.fix?.newContent && issue.file) {
@@ -317,17 +287,13 @@ async function fixIssues(request: FixRequest) {
       return NextResponse.json(result);
     }
 
-    // Commit changes
     const commitMessage = `fix: Chimera auto-fixes (${result.fixedCount} issues)\n\nFixed issues:\n${
       issuesToFix.filter(i => i.status === 'fixed').map(i => `- ${i.title}`).join('\n')
     }`;
 
     await commitChanges(localPath, commitMessage);
-
-    // Push
     await pushChanges(localPath, branchName, token);
 
-    // Create PR if requested
     if (request.createPR) {
       const prResult = await createPullRequest(
         { owner: project.owner, name: project.repo, fullName: `${project.owner}/${project.repo}`, url: project.githubUrl, isPrivate: project.isPrivate },
@@ -344,7 +310,6 @@ async function fixIssues(request: FixRequest) {
 
       if (prResult.success) {
         result.prUrl = prResult.prUrl;
-        // Update issues with PR URL
         for (const issue of issuesToFix.filter(i => i.status === 'fixed')) {
           issue.prUrl = prResult.prUrl;
         }
@@ -363,16 +328,13 @@ async function fixIssues(request: FixRequest) {
 }
 
 async function removeProject(projectId: string) {
-  const project = projects.get(projectId);
+  const project = getProject(projectId);
   if (!project) {
     return NextResponse.json({ error: 'Project not found' }, { status: 404 });
   }
 
-  // Remove from storage
-  projects.delete(projectId);
-  analyses.delete(projectId);
+  deleteProject(projectId);
 
-  // Optionally clean up cloned files
   try {
     const reposDir = path.join(process.cwd(), '.chimera-repos');
     const localPath = path.join(reposDir, project.owner, project.repo);

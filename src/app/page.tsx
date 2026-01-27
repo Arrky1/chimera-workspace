@@ -76,9 +76,10 @@ export default function Home() {
   const handleSubmit = async (input: string, attachments?: File[]) => {
     if (!input.trim()) return;
 
-    // Check if user wants to analyze a project
+    // Check if user wants to work with a project — switch to Projects tab with chat
     const revisionMatch = input.match(/(?:ревизи[яю]|проверь|анализ|review|analyze)\s+(?:проект[а]?\s+)?(.+)/i);
     if (revisionMatch) {
+      addMessage({ role: 'assistant', content: 'Переключаюсь на вкладку Projects. Используйте чат проекта для работы с конкретным репозиторием.' });
       setActiveTab('projects');
       return;
     }
@@ -235,11 +236,41 @@ export default function Home() {
 
   const executePlan = async (plan: ExecutionPlan, messageId: string) => {
     try {
+      // Immediately mark plan as executing with first phase running
+      const runningPlan = {
+        ...plan,
+        status: 'executing' as const,
+        phases: plan.phases.map((p, i) => ({
+          ...p,
+          status: i === 0 ? ('running' as const) : p.status,
+          progress: i === 0 ? 10 : p.progress,
+        })),
+      };
+      updateMessage(messageId, { executionPlan: runningPlan });
+
+      // Simulate progress updates while waiting
+      let progressInterval: NodeJS.Timeout | null = null;
+      let currentProgress = 10;
+      progressInterval = setInterval(() => {
+        currentProgress = Math.min(currentProgress + 5, 90);
+        const updatedPlan = {
+          ...runningPlan,
+          phases: runningPlan.phases.map((p, i) => ({
+            ...p,
+            progress: i === 0 ? currentProgress : p.progress,
+          })),
+        };
+        updateMessage(messageId, { executionPlan: updatedPlan });
+      }, 2000);
+
       const response = await fetch('/api/orchestrate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ confirmedPlan: plan }),
       });
+
+      // Stop progress simulation
+      if (progressInterval) clearInterval(progressInterval);
 
       const data = await response.json();
 
@@ -255,14 +286,22 @@ export default function Home() {
 
         addMessage({
           role: 'assistant',
-          content: `✅ Выполнение завершено!\n\n${resultContent}`,
+          content: `Выполнение завершено!\n\n${resultContent}`,
+        });
+      } else if (data.type === 'error') {
+        updateMessage(messageId, {
+          executionPlan: { ...plan, status: 'failed' as const },
+        });
+        addMessage({
+          role: 'assistant',
+          content: `Ошибка: ${data.message}`,
         });
       }
     } catch (error) {
       console.error('Execution error:', error);
       addMessage({
         role: 'assistant',
-        content: '❌ Ошибка при выполнении плана.',
+        content: 'Ошибка при выполнении плана.',
       });
     }
   };

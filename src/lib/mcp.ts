@@ -10,6 +10,9 @@
  * - Audit logging for tool usage
  */
 
+import * as fs from 'fs/promises';
+import * as pathModule from 'path';
+
 // =============================================================================
 // Access Policy Types
 // =============================================================================
@@ -44,7 +47,7 @@ export interface PolicyContext {
 // Default policies for built-in tools
 const defaultPolicies: Record<string, Partial<ToolPolicy>> = {
   'web_search': { riskLevel: 'low', enabled: true, requiresApproval: false },
-  'file_system': { riskLevel: 'high', enabled: true, requiresApproval: true },
+  'file_system': { riskLevel: 'medium', enabled: true, requiresApproval: false },
   'github': { riskLevel: 'medium', enabled: true, requiresApproval: false },
   'generate_image': { riskLevel: 'low', enabled: true, requiresApproval: false },
   'execute_code': { riskLevel: 'critical', enabled: false, requiresApproval: true },
@@ -289,7 +292,17 @@ export async function executeTool(
   params: Record<string, unknown>,
   context: PolicyContext = {}
 ): Promise<MCPToolResult> {
-  const tool = mcpTools.get(toolName);
+  // Look up tool by exact key first, then try with server prefix, then by name
+  let tool = mcpTools.get(toolName);
+  if (!tool) {
+    // Try finding by tool name across all servers
+    for (const [key, t] of mcpTools.entries()) {
+      if (key.endsWith(`:${toolName}`) || t.name === toolName) {
+        tool = t;
+        break;
+      }
+    }
+  }
   if (!tool) {
     return { success: false, error: `Tool "${toolName}" not found` };
   }
@@ -390,21 +403,44 @@ const fileSystemTool: MCPTool = {
   },
   handler: async (params) => {
     const action = params.action as string;
-    const path = params.path as string;
+    const filePath = params.path as string;
 
-    // Security: only allow operations in project directory
-    if (path.includes('..') || path.startsWith('/')) {
-      return { success: false, error: 'Path traversal not allowed' };
+    // Security: normalize path first, then validate
+    const reposDir = pathModule.resolve(process.cwd(), '.chimera-repos');
+    const fullPath = pathModule.resolve(reposDir, filePath);
+
+    // Ensure normalized path stays within repos directory
+    if (!fullPath.startsWith(reposDir + pathModule.sep) && fullPath !== reposDir) {
+      return { success: false, error: 'Path outside allowed directory' };
     }
 
-    return {
-      success: true,
-      data: {
-        action,
-        path,
-        message: 'File system operations require server-side implementation',
-      },
-    };
+    try {
+      switch (action) {
+        case 'read': {
+          const content = await fs.readFile(fullPath, 'utf-8');
+          return { success: true, data: { path: filePath, content: content.slice(0, 10000) } };
+        }
+        case 'list': {
+          const entries = await fs.readdir(fullPath, { withFileTypes: true });
+          const items = entries.map(e => ({
+            name: e.name,
+            type: e.isDirectory() ? 'directory' : 'file',
+          }));
+          return { success: true, data: { path: filePath, items } };
+        }
+        case 'write': {
+          const content = params.content as string;
+          if (!content) return { success: false, error: 'Content required for write action' };
+          await fs.mkdir(pathModule.dirname(fullPath), { recursive: true });
+          await fs.writeFile(fullPath, content, 'utf-8');
+          return { success: true, data: { path: filePath, written: true } };
+        }
+        default:
+          return { success: false, error: `Unknown action: ${action}` };
+      }
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : 'File operation failed' };
+    }
   },
 };
 
@@ -428,14 +464,67 @@ const githubTool: MCPTool = {
   },
   handler: async (params) => {
     const action = params.action as string;
+    const owner = params.owner as string;
+    const repo = params.repo as string;
+    const token = process.env.GITHUB_TOKEN;
 
-    return {
-      success: true,
-      data: {
-        action,
-        message: 'GitHub integration available through /api/projects',
-      },
+    const headers: Record<string, string> = {
+      'Accept': 'application/vnd.github.v3+json',
+      'User-Agent': 'Chimera-Orchestrator',
     };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+
+    try {
+      switch (action) {
+        case 'get_repo': {
+          if (!owner || !repo) return { success: false, error: 'owner and repo required' };
+          const res = await fetch(`https://api.github.com/repos/${owner}/${repo}`, { headers });
+          if (!res.ok) return { success: false, error: `GitHub API error: ${res.status}` };
+          const data = await res.json();
+          return { success: true, data: {
+            name: data.name, description: data.description, language: data.language,
+            stars: data.stargazers_count, forks: data.forks_count,
+            defaultBranch: data.default_branch, isPrivate: data.private,
+          }};
+        }
+        case 'get_file': {
+          if (!owner || !repo) return { success: false, error: 'owner and repo required' };
+          const filePath = params.path as string;
+          if (!filePath) return { success: false, error: 'path required for get_file' };
+          const res = await fetch(`https://api.github.com/repos/${owner}/${repo}/contents/${filePath}`, { headers });
+          if (!res.ok) return { success: false, error: `File not found: ${res.status}` };
+          const data = await res.json();
+          const content = data.content ? Buffer.from(data.content, 'base64').toString('utf-8') : '';
+          return { success: true, data: { path: filePath, content: content.slice(0, 10000), size: data.size } };
+        }
+        case 'list_files': {
+          if (!owner || !repo) return { success: false, error: 'owner and repo required' };
+          const dirPath = (params.path as string) || '';
+          const res = await fetch(`https://api.github.com/repos/${owner}/${repo}/contents/${dirPath}`, { headers });
+          if (!res.ok) return { success: false, error: `Directory not found: ${res.status}` };
+          const data = await res.json();
+          const items = Array.isArray(data) ? data.map((f: { name: string; type: string; size?: number }) => ({
+            name: f.name, type: f.type, size: f.size,
+          })) : [];
+          return { success: true, data: { path: dirPath || '/', items } };
+        }
+        case 'list_issues': {
+          if (!owner || !repo) return { success: false, error: 'owner and repo required' };
+          const res = await fetch(`https://api.github.com/repos/${owner}/${repo}/issues?state=open&per_page=10`, { headers });
+          if (!res.ok) return { success: false, error: `GitHub API error: ${res.status}` };
+          const data = await res.json();
+          const issues = Array.isArray(data) ? data.map((i: { number: number; title: string; state: string; labels: { name: string }[] }) => ({
+            number: i.number, title: i.title, state: i.state,
+            labels: i.labels.map(l => l.name),
+          })) : [];
+          return { success: true, data: { issues } };
+        }
+        default:
+          return { success: false, error: `Unknown action: ${action}. Supported: get_repo, get_file, list_files, list_issues` };
+      }
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : 'GitHub operation failed' };
+    }
   },
 };
 
