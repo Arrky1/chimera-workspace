@@ -144,19 +144,19 @@ export const MODELS: ModelConfig[] = [
   },
   // OpenAI models
   {
-    id: 'gpt-5.2',
+    id: 'gpt-4o',
     provider: 'openai',
-    name: 'GPT-5.2',
-    apiModel: 'gpt-5.2',
-    strengths: ['complex_reasoning', 'math', 'code', 'architecture'],
+    name: 'GPT-4o',
+    apiModel: 'gpt-4o',
+    strengths: ['complex_reasoning', 'code', 'architecture', 'multimodal'],
     available: false,
   },
   {
-    id: 'gpt-5.2-pro',
+    id: 'gpt-4o-mini',
     provider: 'openai',
-    name: 'GPT-5.2 Pro',
-    apiModel: 'gpt-5.2-pro',
-    strengths: ['complex_reasoning', 'math', 'code', 'planning', 'architecture'],
+    name: 'GPT-4o Mini',
+    apiModel: 'gpt-4o-mini',
+    strengths: ['fast', 'code', 'general'],
     available: false,
   },
   {
