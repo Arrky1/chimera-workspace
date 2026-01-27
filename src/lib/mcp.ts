@@ -380,6 +380,50 @@ const webSearchTool: MCPTool = {
 };
 
 /**
+ * GitHub API fallback for reading files when local clone is not available
+ */
+async function githubFileFallback(
+  action: 'read' | 'list',
+  owner: string,
+  repo: string,
+  filePath: string
+): Promise<{ success: boolean; data?: unknown; error?: string }> {
+  const token = process.env.GITHUB_TOKEN;
+  const headers: Record<string, string> = {
+    'Accept': 'application/vnd.github.v3+json',
+    'User-Agent': 'Chimera-Orchestrator',
+  };
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+
+  try {
+    const res = await fetch(
+      `https://api.github.com/repos/${owner}/${repo}/contents/${filePath}`,
+      { headers }
+    );
+    if (!res.ok) {
+      return { success: false, error: `GitHub API: ${res.status} — файл не найден в ${owner}/${repo}/${filePath}` };
+    }
+    const data = await res.json();
+
+    if (action === 'list' && Array.isArray(data)) {
+      const items = data.map((f: { name: string; type: string; size?: number }) => ({
+        name: f.name, type: f.type, size: f.size,
+      }));
+      return { success: true, data: { path: filePath || '/', items, source: 'github_api' } };
+    }
+
+    if (action === 'read' && data.content) {
+      const content = Buffer.from(data.content, 'base64').toString('utf-8');
+      return { success: true, data: { path: filePath, content: content.slice(0, 10000), source: 'github_api' } };
+    }
+
+    return { success: false, error: 'Неизвестный формат ответа от GitHub API' };
+  } catch (error) {
+    return { success: false, error: `GitHub API fallback failed: ${error instanceof Error ? error.message : 'Unknown'}` };
+  }
+}
+
+/**
  * File System Tool
  */
 const fileSystemTool: MCPTool = {
@@ -407,19 +451,41 @@ const fileSystemTool: MCPTool = {
       return { success: false, error: 'Path outside allowed directory' };
     }
 
+    // Extract owner/repo from path for GitHub API fallback (path format: owner/repo/...)
+    const pathParts = filePath.split('/');
+    const owner = pathParts[0];
+    const repo = pathParts[1];
+    const repoFilePath = pathParts.slice(2).join('/');
+
     try {
       switch (action) {
         case 'read': {
-          const content = await fs.readFile(fullPath, 'utf-8');
-          return { success: true, data: { path: filePath, content: content.slice(0, 10000) } };
+          try {
+            const content = await fs.readFile(fullPath, 'utf-8');
+            return { success: true, data: { path: filePath, content: content.slice(0, 10000) } };
+          } catch {
+            // Local file not found — fallback to GitHub API
+            if (owner && repo && repoFilePath) {
+              return await githubFileFallback('read', owner, repo, repoFilePath);
+            }
+            return { success: false, error: `Файл не найден локально: ${filePath}. Используй github tool с action "get_file" для чтения через API.` };
+          }
         }
         case 'list': {
-          const entries = await fs.readdir(fullPath, { withFileTypes: true });
-          const items = entries.map(e => ({
-            name: e.name,
-            type: e.isDirectory() ? 'directory' : 'file',
-          }));
-          return { success: true, data: { path: filePath, items } };
+          try {
+            const entries = await fs.readdir(fullPath, { withFileTypes: true });
+            const items = entries.map(e => ({
+              name: e.name,
+              type: e.isDirectory() ? 'directory' : 'file',
+            }));
+            return { success: true, data: { path: filePath, items } };
+          } catch {
+            // Local dir not found — fallback to GitHub API
+            if (owner && repo) {
+              return await githubFileFallback('list', owner, repo, repoFilePath || '');
+            }
+            return { success: false, error: `Директория не найдена локально: ${filePath}. Используй github tool с action "list_files" для чтения через API.` };
+          }
         }
         case 'write': {
           const content = params.content as string;

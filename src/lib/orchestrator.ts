@@ -80,59 +80,26 @@ function extractObject(input: string): string {
 }
 
 // Detect ambiguities in the request
+// POLICY: Almost never ask clarification. Only for dangerous destructive operations.
+// For everything else — just do the task, make reasonable assumptions.
 export async function detectAmbiguities(
   input: string,
   intent: ParsedIntent
 ): Promise<Ambiguity[]> {
   const ambiguities: Ambiguity[] = [];
-  const lowerInput = input.toLowerCase();
 
-  // Check for vague reference terms
-  for (const term of VAGUE_TERMS) {
-    if (lowerInput.includes(term)) {
-      ambiguities.push({
-        type: 'reference',
-        term,
-        question: `Что конкретно вы имеете в виду под "${term}"?`,
-        candidates: [],
-        severity: 'medium',
-      });
-    }
-  }
-
-  // Only ask about scope for destructive operations on the entire project
+  // ONLY ask for confirmation on destructive "delete all" operations
   if (!intent.scope && intent.action === 'delete' && /все|весь|целиком|полностью|all|entire/i.test(input)) {
     ambiguities.push({
       type: 'scope',
       term: intent.action,
       question: 'Подтвердите масштаб удаления:',
-      candidates: ['Минимальный (только указанное)', 'Полный (всё связанное)'],
+      candidates: ['Только указанные элементы', 'Всё связанное (включая зависимости)', 'Полная очистка'],
       severity: 'high',
     });
   }
 
-  // Check for technical ambiguity in implementation requests
-  if (intent.action === 'create' && lowerInput.match(/авториз|auth|логин|login/)) {
-    ambiguities.push({
-      type: 'technical',
-      term: 'authorization',
-      question: 'Какой тип авторизации использовать?',
-      candidates: ['JWT tokens', 'Session-based', 'OAuth (Google/GitHub)', 'Все вместе'],
-      severity: 'high',
-    });
-  }
-
-  // Check for missing target in fix requests
-  if (intent.action === 'fix' && intent.object === 'target') {
-    ambiguities.push({
-      type: 'reference',
-      term: 'bug',
-      question: 'Какую именно проблему нужно исправить?',
-      candidates: [],
-      severity: 'high',
-    });
-  }
-
+  // For everything else — NO clarification. Just act.
   return ambiguities;
 }
 
