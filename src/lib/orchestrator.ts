@@ -140,23 +140,47 @@ export function classifyTask(intent: ParsedIntent, input: string): {
   needsArchitecture: boolean;
 } {
   const lowerInput = input.toLowerCase();
+  const inputLength = input.length;
 
   // Check for architecture keywords
-  const needsArchitecture = /архитектур|структур|дизайн|design|implement.*system|создать.*проект/i.test(input);
+  const needsArchitecture = /архитектур|структур|дизайн|design|implement.*system|создать.*проект|refactor|рефакторинг/i.test(input);
 
-  // Estimate complexity
+  // Detect multi-part tasks
+  const isMultiPart = /несколько|multiple|добавь.*и.*и|create.*and.*and|а также|а ещё|а еще|кроме того|плюс|и ещё|и еще/i.test(lowerInput);
+
+  // Detect analysis/review tasks (benefit from multiple perspectives)
+  const isAnalysisTask = /анализ|ревизи|review|проверь|оцени|сравни|compare|audit|аудит|оптимиз|optimize/i.test(lowerInput);
+
+  // Detect coding tasks that benefit from team
+  const isCodingTask = /напиши|создай|реализуй|implement|write|build|сделай|разработай|develop|добавь функци|add feature/i.test(lowerInput);
+
+  // Detect research tasks
+  const isResearchTask = /исследуй|research|найди.*способ|find.*way|предложи.*вариант|suggest|объясни.*как|explain.*how/i.test(lowerInput);
+
+  // Estimate complexity based on multiple signals
   let complexity: 'simple' | 'medium' | 'complex' = 'simple';
   let estimatedSubtasks = 1;
 
   if (needsArchitecture) {
     complexity = 'complex';
     estimatedSubtasks = 5;
-  } else if (lowerInput.match(/несколько|multiple|добавь.*и.*и|create.*and.*and/)) {
+  } else if (isMultiPart) {
     complexity = 'medium';
     estimatedSubtasks = 3;
   } else if (intent.scope === 'full') {
     complexity = 'medium';
     estimatedSubtasks = 4;
+  } else if (isAnalysisTask && inputLength > 50) {
+    // Нетривиальные аналитические запросы → средняя сложность (команда)
+    complexity = 'medium';
+    estimatedSubtasks = 3;
+  } else if (isCodingTask && inputLength > 80) {
+    // Развёрнутые задачи по коду → средняя сложность
+    complexity = 'medium';
+    estimatedSubtasks = 3;
+  } else if (isResearchTask) {
+    complexity = 'medium';
+    estimatedSubtasks = 2;
   }
 
   // Determine execution mode
@@ -164,11 +188,16 @@ export function classifyTask(intent: ParsedIntent, input: string): {
 
   if (complexity === 'complex' || needsArchitecture) {
     recommendedMode = 'council';
-  } else if (estimatedSubtasks >= 3) {
+  } else if (complexity === 'medium') {
+    // Средняя сложность → всегда swarm (задействуем команду)
     recommendedMode = 'swarm';
+    // Убедимся что достаточно подзадач для swarm
+    if (estimatedSubtasks < 2) estimatedSubtasks = 2;
   } else if (intent.action === 'analyze' || intent.action === 'fix') {
     recommendedMode = 'deliberation';
   }
+
+  console.log(`[Classify] "${input.slice(0, 60)}..." → complexity=${complexity}, mode=${recommendedMode}, subtasks=${estimatedSubtasks}`);
 
   return {
     complexity,
@@ -215,13 +244,15 @@ export function createExecutionPlan(
   const bestProvider: ModelProvider = bestModel?.provider || 'claude';
 
   // Main execution phase
-  if (classification.recommendedMode === 'swarm' && classification.estimatedSubtasks >= 3) {
+  // Swarm: при рекомендации swarm И наличии 2+ доступных провайдеров
+  const availableProviders = getProviders();
+  if (classification.recommendedMode === 'swarm' && availableProviders.length >= 2) {
     phases.push({
       id: 'phase-swarm',
       mode: 'swarm',
       name: 'Parallel Implementation (Swarm)',
       status: 'pending',
-      models: getProviders(), // Swarm uses all available models
+      models: availableProviders,
       progress: 0,
     });
   } else {
@@ -324,16 +355,17 @@ export async function executeDeliberation(
   for (let i = 0; i < maxIterations && !approved; i++) {
     iterations++;
 
-    // Generate/improve code
+    // Generate/improve — КРАТКО, без полных модулей
     const genPrompt = i === 0
-      ? `Task: ${task}\n\nGenerate the code to accomplish this task.`
-      : `Task: ${task}\n\nPrevious code:\n${code}\n\nReview feedback: improve the code based on the feedback.`;
+      ? `Задача: ${task}\n\nДай КРАТКИЙ ответ: ключевые решения, план, фрагменты кода (до 20 строк). НЕ пиши полные модули.`
+      : `Задача: ${task}\n\nПредыдущий ответ:\n${code}\n\nОтзыв ревьюера. Улучши ответ. Будь КРАТОК — максимум 300 слов.`;
 
     const genResponse = await generateWithModel(
       generatorProvider,
       generator.apiModel,
       genPrompt,
-      'You are an expert programmer. Write clean, well-documented code.'
+      'Ты — эксперт-разработчик. Давай КРАТКИЕ, конкретные ответы. Максимум 300 слов. Код — только ключевые фрагменты до 20 строк. НЕ пиши полные модули.',
+      { maxTokens: 2000 }
     );
     code = genResponse.content;
 
@@ -343,18 +375,19 @@ export async function executeDeliberation(
       break;
     }
 
-    // Review code
+    // Review — тоже кратко
     const reviewResponse = await generateWithModel(
       reviewerProvider,
       reviewer.apiModel,
-      `Review this code for bugs, security issues, and improvements:
+      `Проверь этот ответ на корректность и полноту:
 
-${code}
+${code.slice(0, 2000)}
 
-Respond with either:
-- "APPROVED" if the code is good
-- Or list specific issues to fix`,
-      'You are a senior code reviewer. Be thorough but constructive.'
+Ответь:
+- "APPROVED" если ответ хороший
+- Или КРАТКО (до 100 слов) укажи что исправить`,
+      'Ты — ревьюер. Будь кратким. Максимум 100 слов.',
+      { maxTokens: 500 }
     );
 
     approved = reviewResponse.content.toUpperCase().includes('APPROVED');

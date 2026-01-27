@@ -117,6 +117,11 @@ export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
 
+    // Лог доступных моделей (для диагностики)
+    const allModels = getAvailableModels();
+    const availProviders = allModels.filter(m => m.available).map(m => `${m.provider}/${m.apiModel}`);
+    console.log(`[Orchestrator] Доступные модели (${availProviders.length}): ${availProviders.join(', ')}`);
+
     // Validate request with Zod schema
     const validatedRequest = validateOrThrow(OrchestrateRequestSchema, body);
     const { message, history, sessionId, clarificationAnswers, confirmedPlan, idempotencyKey, executionId } = validatedRequest;
@@ -294,12 +299,18 @@ async function proceedWithExecution(
     await setIdempotency(idempotencyKey, executionId);
   }
 
-  // 4. For simple tasks, execute immediately
+  // 4. For simple tasks, execute immediately (single model)
   if (classification.complexity === 'simple') {
     return executeSimpleTask(message, intent, plan, executionId, session);
   }
 
-  // 5. For complex tasks, return plan for confirmation
+  // 5. For medium tasks — auto-execute plan (swarm/team)
+  if (classification.complexity === 'medium') {
+    console.log(`[Orchestrator] Auto-executing medium task with mode: ${classification.recommendedMode}`);
+    return handlePlanExecution(plan, idempotencyKey, session);
+  }
+
+  // 6. For complex tasks, return plan for confirmation
   return NextResponse.json({
     type: 'plan',
     message: 'Вот план выполнения задачи:',
@@ -681,21 +692,31 @@ async function executeSwarmMode(originalMessage: string, session: string = 'main
     // Включаем контекст разговора в синтез
     const historyContext = buildConversationContext(session, 5);
 
+    // Обрезаем результаты команды для синтеза — не более 800 символов на каждого
+    const trimmedResults = swarmResults.map(r => {
+      const trimmed = r.result.length > 800 ? r.result.slice(0, 800) + '... [сокращено]' : r.result;
+      return `**${r.member} (${r.provider}):**\n${trimmed}`;
+    }).join('\n\n---\n\n');
+
     const synthesisPrompt = `${historyContext ? historyContext + '\n\n' : ''}Результаты работы команды:
 
-${swarmResults.map(r => `**${r.member} (${r.provider}):**\n${r.result}`).join('\n\n---\n\n')}
+${trimmedResults}
 
 Исходный запрос: ${originalMessage}
 
-Объедини результаты в один структурированный ответ. Убери дублирования. Выдели главное.
-Если некоторые результаты пусты или содержат ошибки — не упоминай их, работай с тем что есть.
-Ответ должен быть КРАТКИМ — максимум 500 слов. Не выдавай огромные блоки кода.`;
+ЗАДАЧА: Дай КРАТКИЙ структурированный ИТОГ.
+- Максимум 300 слов
+- НЕ повторяй код из результатов — только выводы и рекомендации
+- Если есть проблемы — таблица: приоритет | проблема | решение
+- План действий — нумерованный список
+- НЕ генерируй новый код — только ссылайся на результаты команды`;
 
     const synthesisResponse = await withRetry(() => generateWithModel(
       lead.provider,
       lead.modelId,
       synthesisPrompt,
-      'Ты — Алекс, ведущий архитектор команды Chimera. Синтезируй результаты команды КРАТКО и структурированно. Максимум 500 слов. Отвечай на русском.'
+      'Ты — Алекс, ведущий архитектор команды Chimera. Дай КРАТКОЕ заключение по результатам команды. МАКСИМУМ 300 слов. НЕ выдавай блоки кода — только выводы, проблемы, план. Отвечай на русском.',
+      { maxTokens: 2000 }
     ));
 
     synthesis = synthesisResponse.content || synthesis;

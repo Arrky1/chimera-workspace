@@ -107,7 +107,7 @@ export type ExecutionPlan = z.infer<typeof ExecutionPlanSchema>;
 // =============================================================================
 
 export const TaskClassificationSchema = z.object({
-  complexity: z.enum(['simple', 'moderate', 'complex']),
+  complexity: z.enum(['simple', 'medium', 'complex']),
   recommendedMode: ExecutionModeSchema,
   estimatedSubtasks: z.number().min(1),
   needsArchitecture: z.boolean(),
@@ -348,7 +348,7 @@ export function parseIntentResponse(content: string): ParsedIntent | null {
  */
 export function parseClassificationResponse(content: string): TaskClassification | null {
   return parseLLMResponse(content, TaskClassificationSchema, (text) => {
-    const complexityMatch = text.match(/complexity[:\s]*(simple|moderate|complex)/i);
+    const complexityMatch = text.match(/complexity[:\s]*(simple|medium|moderate|complex)/i);
     const modeMatch = text.match(/mode[:\s]*(single|council|swarm|deliberation|debate)/i);
     const subtasksMatch = text.match(/subtasks?[:\s]*(\d+)/i);
     const architectureMatch = text.match(/architecture[:\s]*(yes|no|true|false)/i);

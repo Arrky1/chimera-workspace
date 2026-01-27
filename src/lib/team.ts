@@ -294,19 +294,24 @@ function resolveModelForRole(role: TeamRole): { provider: ModelProvider; modelId
   const available = getAvailableModels().filter(m => m.available);
   const preferences = ROLE_PROVIDER_PREFERENCES[role];
 
+  console.log(`[ResolveModel] role=${role}, available=[${available.map(m => m.provider).join(', ')}], preferences=[${preferences.join(', ')}]`);
+
   for (const preferredProvider of preferences) {
     const model = available.find(m => m.provider === preferredProvider);
     if (model) {
+      console.log(`[ResolveModel] → ${role} → ${model.provider}/${model.apiModel}`);
       return { provider: model.provider, modelId: model.apiModel };
     }
   }
 
   // Крайний fallback — первая доступная модель
   if (available.length > 0) {
+    console.log(`[ResolveModel] → ${role} → FALLBACK: ${available[0].provider}/${available[0].apiModel}`);
     return { provider: available[0].provider, modelId: available[0].apiModel };
   }
 
   // Нет доступных моделей — вернём Claude как заглушку (ошибка будет на этапе вызова)
+  console.log(`[ResolveModel] → ${role} → NO MODELS AVAILABLE, using claude stub`);
   return { provider: 'claude', modelId: 'claude-sonnet-4-5-20251101' };
 }
 
@@ -449,6 +454,8 @@ ${projectsContext}
   // Assemble team based on required roles
   assembleTeam(requiredRoles: TeamRole[]): TeamMember[] {
     const team: TeamMember[] = [this.lead];
+    console.log(`[Team] Assembling team. Lead: ${this.lead.name} (${this.lead.provider}/${this.lead.modelId})`);
+    console.log(`[Team] Required roles: ${requiredRoles.join(', ')}`);
 
     for (const role of requiredRoles) {
       // Find existing idle member with this role
@@ -464,9 +471,12 @@ ${projectsContext}
 
       if (!team.find(m => m.id === member!.id)) {
         team.push(member);
+        console.log(`[Team] + ${member.name} (${role}) → ${member.provider}/${member.modelId}`);
       }
     }
 
+    const providers = [...new Set(team.map(m => m.provider))];
+    console.log(`[Team] Final team: ${team.length} members, providers: ${providers.join(', ')}`);
     return team;
   }
 
@@ -560,19 +570,22 @@ ${projectsContext}
 Описание: ${task.description}
 Приоритет: ${task.priority}
 
-## Общие правила:
-- Отвечай КРАТКО и по делу
-- Давай конкретный результат, не теорию
-- Код — максимум 30 строк ключевого фрагмента
-- Если задача связана с проектом — учитывай его контекст
-- Отвечай на языке пользователя (по умолчанию русский)`;
+## ЖЁСТКИЕ ПРАВИЛА ОТВЕТА:
+- МАКСИМУМ 200 слов. Это абсолютный лимит.
+- НЕ пиши полные модули кода. ТОЛЬКО ключевые фрагменты (до 15 строк)
+- Давай ЗАКЛЮЧЕНИЕ, не реализацию
+- Список проблем → решение в 1-2 предложения каждое
+- Код — только если явно просят. Иначе текстовое описание
+- Отвечай на языке пользователя (по умолчанию русский)
+- Если задача связана с проектом — учитывай его контекст`;
 
-    // Попытка 1: основной провайдер члена команды
+    // Попытка 1: основной провайдер члена команды (ограничение 1500 токенов для краткости)
     let response = await generateWithModel(
       member.provider,
       member.modelId,
       task.description,
-      systemPrompt
+      systemPrompt,
+      { maxTokens: 1500 }
     );
 
     // Если основной провайдер вернул ошибку — пробуем fallback
@@ -591,7 +604,8 @@ ${projectsContext}
           fallbackModel.provider,
           fallbackModel.apiModel,
           task.description,
-          systemPrompt
+          systemPrompt,
+          { maxTokens: 1500 }
         );
 
         // Обновляем провайдер на успешный для будущих задач
