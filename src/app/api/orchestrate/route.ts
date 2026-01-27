@@ -156,7 +156,7 @@ export async function POST(request: NextRequest) {
     }
 
     // If we have clarification answers, process them and continue
-    if (clarificationAnswers) {
+    if (clarificationAnswers && message) {
       return handleClarificationResponse(message, clarificationAnswers, idempotencyKey);
     }
 
@@ -166,7 +166,13 @@ export async function POST(request: NextRequest) {
       return handlePlanExecution(confirmedPlan as ExecutionPlan, idempotencyKey);
     }
 
-    // Initial message processing
+    // Initial message processing (message is guaranteed by refine validation)
+    if (!message) {
+      return NextResponse.json(
+        { type: 'error', message: 'Сообщение обязательно для нового запроса' },
+        { status: 400 }
+      );
+    }
     return handleInitialMessage(message, idempotencyKey);
   } catch (error) {
     console.error('Orchestrator error:', error);

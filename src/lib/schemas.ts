@@ -159,12 +159,15 @@ export type DebateResult = z.infer<typeof DebateResultSchema>;
 // =============================================================================
 
 export const OrchestrateRequestSchema = z.object({
-  message: z.string().min(1, 'Message is required'),
+  message: z.string().min(1, 'Message is required').optional(),
   clarificationAnswers: z.record(z.string(), z.string()).optional(),
   confirmedPlan: ExecutionPlanSchema.optional(),
   idempotencyKey: z.string().optional(),
   executionId: z.string().optional(), // For resuming
-});
+}).refine(
+  (data) => data.message || data.confirmedPlan || data.executionId,
+  { message: 'Either message, confirmedPlan, or executionId is required' }
+);
 
 export type OrchestrateRequest = z.infer<typeof OrchestrateRequestSchema>;
 
