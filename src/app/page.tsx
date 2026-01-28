@@ -28,7 +28,20 @@ interface QueuedMessage {
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState<TabType>('chat');
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [messages, setMessages] = useState<Message[]>(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const stored = localStorage.getItem('chimera-chat-messages');
+        if (stored) {
+          const parsed = JSON.parse(stored) as Message[];
+          return parsed.map(m => ({ ...m, timestamp: new Date(m.timestamp) }));
+        }
+      } catch (e) {
+        console.error('Failed to load chat history:', e);
+      }
+    }
+    return [];
+  });
   const [models, setModels] = useState<ModelConfig[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [pendingClarification, setPendingClarification] = useState<{
@@ -39,7 +52,16 @@ export default function Home() {
   const [activityExpanded, setActivityExpanded] = useState(true);
   const { activities, addActivity, updateActivity, clearActivities } = useActivityFeed();
   const { events, addEvent, clearEvents, exportEvents } = useEventLog();
-  const [sessionId] = useState<string>(() => `session-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  const [sessionId] = useState<string>(() => {
+    if (typeof window !== 'undefined') {
+      const stored = localStorage.getItem('chimera-session-id');
+      if (stored) return stored;
+      const newId = `session-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      localStorage.setItem('chimera-session-id', newId);
+      return newId;
+    }
+    return `session-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  });
   const [chatInputValue, setChatInputValue] = useState('');
   const [currentMode, setCurrentMode] = useState<ExecutionMode>('single');
   const [modelStats, setModelStats] = useState<{
@@ -54,6 +76,20 @@ export default function Home() {
   // Message queue
   const [messageQueue, setMessageQueue] = useState<QueuedMessage[]>([]);
   const processingRef = useRef(false);
+
+  // Persist messages to localStorage
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      // Keep only real messages (no queue placeholders), limit to 100
+      const toSave = messages
+        .filter(m => !m.queueStatus)
+        .slice(-100);
+      localStorage.setItem('chimera-chat-messages', JSON.stringify(toSave));
+    } catch (e) {
+      console.error('Failed to save chat history:', e);
+    }
+  }, [messages]);
 
   // Fetch available models on mount
   useEffect(() => {
@@ -162,7 +198,7 @@ export default function Home() {
     };
 
     try {
-      const recentHistory = messages.slice(-10).map(m => ({
+      const recentHistory = messages.slice(-20).map(m => ({
         role: m.role,
         content: m.content,
         timestamp: m.timestamp ? new Date(m.timestamp).getTime() : Date.now(),
@@ -298,7 +334,7 @@ export default function Home() {
     setIsProcessing(true);
 
     try {
-      const recentHistory = messages.slice(-10).map(m => ({
+      const recentHistory = messages.slice(-20).map(m => ({
         role: m.role,
         content: m.content,
         timestamp: m.timestamp ? new Date(m.timestamp).getTime() : Date.now(),
@@ -412,6 +448,23 @@ export default function Home() {
     }
   };
 
+  const handleNewChat = useCallback(() => {
+    setMessages([]);
+    setMessageQueue([]);
+    setPendingClarification(null);
+    setIsProcessing(false);
+    processingRef.current = false;
+    setChatInputValue('');
+    clearActivities();
+    clearEvents();
+    // Generate new session
+    const newId = `session-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    localStorage.setItem('chimera-session-id', newId);
+    localStorage.removeItem('chimera-chat-messages');
+    // Force reload to pick up new sessionId
+    window.location.reload();
+  }, [clearActivities, clearEvents]);
+
   const tabs = [
     { id: 'chat' as TabType, label: 'Chat', icon: MessageSquare },
     { id: 'projects' as TabType, label: 'Projects', icon: FolderGit2 },
@@ -421,7 +474,7 @@ export default function Home() {
 
   return (
     <div className="flex h-screen flex-col">
-      <Header models={models} />
+      <Header models={models} onNewChat={handleNewChat} />
 
       {/* Tabs */}
       <div className="border-b border-orchestrator-border bg-orchestrator-card">

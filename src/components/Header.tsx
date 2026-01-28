@@ -1,13 +1,14 @@
 'use client';
 
-import { Settings, HelpCircle } from 'lucide-react';
+import { Settings, HelpCircle, Plus } from 'lucide-react';
 import { ModelConfig } from '@/types';
 
 interface HeaderProps {
   models: ModelConfig[];
+  onNewChat?: () => void;
 }
 
-export function Header({ models }: HeaderProps) {
+export function Header({ models, onNewChat }: HeaderProps) {
   const availableCount = models.filter((m) => m.available).length;
 
   return (
@@ -62,6 +63,17 @@ export function Header({ models }: HeaderProps) {
         </div>
 
         {/* Actions */}
+        {onNewChat && (
+          <button
+            onClick={onNewChat}
+            className="flex items-center gap-1.5 rounded-lg bg-orchestrator-accent/10 px-3 py-2 text-sm text-orchestrator-accent transition-colors hover:bg-orchestrator-accent/20"
+            title="Новый чат"
+          >
+            <Plus size={16} />
+            <span>Новый чат</span>
+          </button>
+        )}
+
         <button
           className="rounded-lg p-2 text-gray-400 transition-colors hover:bg-orchestrator-border hover:text-white"
           title="Настройки"

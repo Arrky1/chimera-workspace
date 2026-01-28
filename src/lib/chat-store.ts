@@ -38,7 +38,7 @@ export interface TaskTree {
 // Storage
 // =============================================================================
 
-const MAX_HISTORY = 50;
+const MAX_HISTORY = 100;
 const MAX_TASK_TREES = 20;
 
 // sessionId -> ChatMessage[]
@@ -84,7 +84,7 @@ export function clearChatHistory(sessionId: string = DEFAULT_SESSION): void {
  */
 export function buildConversationContext(
   sessionId: string = DEFAULT_SESSION,
-  maxMessages: number = 10
+  maxMessages: number = 15
 ): string {
   const history = getChatHistory(sessionId);
   if (history.length === 0) return '';
