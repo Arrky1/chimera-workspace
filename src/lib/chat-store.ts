@@ -84,7 +84,7 @@ export function clearChatHistory(sessionId: string = DEFAULT_SESSION): void {
  */
 export function buildConversationContext(
   sessionId: string = DEFAULT_SESSION,
-  maxMessages: number = 15
+  maxMessages: number = 20
 ): string {
   const history = getChatHistory(sessionId);
   if (history.length === 0) return '';

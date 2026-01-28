@@ -81,10 +81,10 @@ export default function Home() {
   useEffect(() => {
     if (typeof window === 'undefined') return;
     try {
-      // Keep only real messages (no queue placeholders), limit to 100
+      // Keep only real messages (no queue placeholders), limit to 500
       const toSave = messages
         .filter(m => !m.queueStatus)
-        .slice(-100);
+        .slice(-500);
       localStorage.setItem('chimera-chat-messages', JSON.stringify(toSave));
     } catch (e) {
       console.error('Failed to save chat history:', e);
@@ -198,7 +198,7 @@ export default function Home() {
     };
 
     try {
-      const recentHistory = messages.slice(-20).map(m => ({
+      const recentHistory = messages.slice(-30).map(m => ({
         role: m.role,
         content: m.content,
         timestamp: m.timestamp ? new Date(m.timestamp).getTime() : Date.now(),
@@ -334,7 +334,7 @@ export default function Home() {
     setIsProcessing(true);
 
     try {
-      const recentHistory = messages.slice(-20).map(m => ({
+      const recentHistory = messages.slice(-30).map(m => ({
         role: m.role,
         content: m.content,
         timestamp: m.timestamp ? new Date(m.timestamp).getTime() : Date.now(),
