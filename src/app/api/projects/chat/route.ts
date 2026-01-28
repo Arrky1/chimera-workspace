@@ -5,7 +5,7 @@ import {
   getProject, getProjectContextSummary,
   getChatHistory, addChatMessage,
 } from '@/lib/project-store';
-import { buildConversationContext } from '@/lib/chat-store';
+import { buildConversationContext, getVisionContext } from '@/lib/chat-store';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 
@@ -65,7 +65,12 @@ export async function POST(request: NextRequest) {
 
     // ── ЭТАП 1: РАБОЧИЙ (work) ──────────────────────────────────────────
     const toolsDescription = getToolDescriptions();
-    const workSystemPrompt = `Ты — Chimera AI, рабочий агент для анализа кода. Контекст проекта:
+    const projVision = getVisionContext();
+    const workSystemPrompt = `Ты — Chimera AI, рабочий агент для анализа кода.
+
+${projVision}
+
+## Контекст проекта:
 
 ${projectContext || 'Данные проекта ещё загружаются.'}${fileStructure}
 
@@ -171,7 +176,10 @@ ${toolsDescription}
     // ── ЭТАП 2: ФИНАЛИЗАЦИЯ (finalize) ──────────────────────────────────
     const workContext = workContextParts.join('\n\n---\n\n');
 
+    const finalVision = getVisionContext();
     const finalizeSystemPrompt = `Ты — Chimera AI. Сформулируй чистый, понятный ответ пользователю о проекте ${project.name} (${project.owner}/${project.repo}).
+
+${finalVision}
 
 ## Правила
 - Отвечай на том языке, на котором пишет пользователь

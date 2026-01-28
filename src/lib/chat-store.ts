@@ -35,17 +35,44 @@ export interface TaskTree {
 }
 
 // =============================================================================
+// Vision Context (permanent project identity)
+// =============================================================================
+
+const VISION_TEXT = `Chimera — AI-платформа, объединяющая несколько AI-моделей (Claude, GPT, Gemini, DeepSeek, Qwen, Grok) в одну систему. Автоматически выбирает лучшую модель или комбинацию для каждой задачи.
+
+Режимы оркестрации: Single (одна модель), Council (голосование), Swarm (параллельные агенты), Deliberation (итеративный code review), Debate (Pro vs Con + Judge).
+
+AI-команда: Alex (Lead Architect, Claude Opus), Max (Senior Dev, GPT-5.2), Lena (QA, Gemini), Ivan (Research, DeepSeek R1). Каждый использует лучшую доступную модель с автофоллбэком.
+
+Двухэтапная обработка: 1) Рабочий этап — модель работает с инструментами, код/JSON допустимы. 2) Финализация — чистый ответ пользователю.
+
+Стек: Next.js 14, TypeScript, Tailwind CSS, Railway (auto-deploy). Репо: github.com/Arrky1/chimera.
+
+Текущий статус: рабочий прототип — 6 провайдеров, 15+ моделей, проектный дашборд с GitHub-интеграцией, очередь сообщений, голосовой ввод, health-трекинг провайдеров, monitor-вкладка.`;
+
+export function getVisionContext(): string {
+  return `## О проекте Chimera\n${VISION_TEXT}`;
+}
+
+// =============================================================================
 // Storage
 // =============================================================================
 
 const MAX_HISTORY = 100;
 const MAX_TASK_TREES = 20;
+const SUMMARY_THRESHOLD = 30; // Summarize when history exceeds this
 
 // sessionId -> ChatMessage[]
 const chatHistories = new Map<string, ChatMessage[]>();
 
 // sessionId -> TaskTree[]
 const taskTrees = new Map<string, TaskTree[]>();
+
+// sessionId -> summary of older messages
+const chatSummaries = new Map<string, string>();
+
+// sessionId -> count of messages when summary was last generated
+const summaryMessageCounts = new Map<string, number>();
 
 // Default session for main chat (no project context)
 const DEFAULT_SESSION = 'main';
@@ -76,11 +103,52 @@ export function addChatMessage(
 
 export function clearChatHistory(sessionId: string = DEFAULT_SESSION): void {
   chatHistories.delete(sessionId);
+  chatSummaries.delete(sessionId);
+  summaryMessageCounts.delete(sessionId);
+}
+
+// =============================================================================
+// Chat Summary (for long conversations)
+// =============================================================================
+
+export function getChatSummary(sessionId: string = DEFAULT_SESSION): string | null {
+  return chatSummaries.get(sessionId) || null;
+}
+
+export function setChatSummary(sessionId: string, summary: string): void {
+  chatSummaries.set(sessionId, summary);
+  const history = getChatHistory(sessionId);
+  summaryMessageCounts.set(sessionId, history.length);
+}
+
+/**
+ * Check if summarization is needed (history grew significantly since last summary)
+ */
+export function needsSummarization(sessionId: string = DEFAULT_SESSION): boolean {
+  const history = getChatHistory(sessionId);
+  if (history.length < SUMMARY_THRESHOLD) return false;
+
+  const lastSummarizedAt = summaryMessageCounts.get(sessionId) || 0;
+  // Re-summarize if 15+ new messages since last summary
+  return history.length - lastSummarizedAt >= 15;
+}
+
+/**
+ * Get messages that need to be summarized (older ones, excluding recent)
+ */
+export function getMessagesForSummary(
+  sessionId: string = DEFAULT_SESSION,
+  keepRecent: number = 15
+): ChatMessage[] {
+  const history = getChatHistory(sessionId);
+  if (history.length <= keepRecent) return [];
+  return history.slice(0, history.length - keepRecent);
 }
 
 /**
  * Build conversation context string from history (last N messages)
- * for injection into the model prompt
+ * for injection into the model prompt.
+ * If a summary exists, prepends it before recent messages.
  */
 export function buildConversationContext(
   sessionId: string = DEFAULT_SESSION,
@@ -89,20 +157,28 @@ export function buildConversationContext(
   const history = getChatHistory(sessionId);
   if (history.length === 0) return '';
 
+  const summary = getChatSummary(sessionId);
   const recent = history.slice(-maxMessages);
 
   // Trim long assistant messages to avoid blowing up prompt
   const formatted = recent.map(m => {
     const role = m.role === 'user' ? 'Пользователь' : 'Ассистент';
     let content = m.content;
-    // Trim assistant messages over 500 chars — just keep summary
     if (m.role === 'assistant' && content.length > 500) {
       content = content.slice(0, 500) + '... [сокращено]';
     }
     return `${role}: ${content}`;
   }).join('\n\n');
 
-  return `## История диалога (последние ${recent.length} сообщений)\n\n${formatted}`;
+  let result = '';
+
+  if (summary) {
+    result += `## Саммари предыдущего обсуждения\n${summary}\n\n`;
+  }
+
+  result += `## История диалога (последние ${recent.length} сообщений)\n\n${formatted}`;
+
+  return result;
 }
 
 // =============================================================================

@@ -25,6 +25,10 @@ import {
   buildTaskTreeContext,
   createTaskTree,
   updateTaskNode,
+  getVisionContext,
+  needsSummarization,
+  getMessagesForSummary,
+  setChatSummary,
 } from '@/lib/chat-store';
 import type { TaskNode } from '@/lib/chat-store';
 import { getAllProjects, getProjectContextSummary, hasProject, setProject } from '@/lib/project-store';
@@ -110,6 +114,44 @@ async function withRetry<T>(
   throw lastError;
 }
 
+// Summarize older messages if conversation is long
+async function summarizeIfNeeded(session: string): Promise<void> {
+  if (!needsSummarization(session)) return;
+
+  const oldMessages = getMessagesForSummary(session, 15);
+  if (oldMessages.length === 0) return;
+
+  // Format old messages for summarization
+  const messagesText = oldMessages.map(m => {
+    const role = m.role === 'user' ? 'User' : 'Assistant';
+    const content = m.content.length > 300 ? m.content.slice(0, 300) + '...' : m.content;
+    return `${role}: ${content}`;
+  }).join('\n');
+
+  // Use fastest available model for summarization
+  const fastModel = getAvailableModels().find(m =>
+    m.available && (m.apiModel.includes('flash') || m.apiModel.includes('mini') || m.apiModel.includes('haiku'))
+  ) || getAvailableModels().find(m => m.available);
+
+  if (!fastModel) return;
+
+  try {
+    const response = await generateWithModel(
+      fastModel.provider,
+      fastModel.apiModel,
+      `Summarize this conversation into key points (decisions, agreements, topics discussed). Max 300 words. Write in the same language as the conversation:\n\n${messagesText.slice(0, 4000)}`,
+      'You are a conversation summarizer. Extract key decisions, topics, and agreements. Be concise and factual.'
+    );
+
+    if (response.content) {
+      setChatSummary(session, response.content);
+    }
+  } catch (error) {
+    console.error('[Summarize] Failed to summarize:', error);
+    // Non-critical — continue without summary
+  }
+}
+
 // Helper: execute with rate limiting
 async function executeWithRateLimit<T>(
   tasks: (() => Promise<T>)[],
@@ -166,6 +208,9 @@ export async function POST(request: NextRequest) {
     if (message) {
       addChatMessage({ role: 'user', content: message, timestamp: Date.now() }, session);
     }
+
+    // Summarize old messages if conversation is long (non-blocking, best-effort)
+    await summarizeIfNeeded(session);
 
     // Idempotency check - return existing execution if duplicate request
     if (idempotencyKey) {
@@ -414,10 +459,14 @@ async function finalizeResponse(
   model: { provider: ModelProvider; apiModel: string },
   session: string = 'main'
 ): Promise<string> {
+  const visionContext = getVisionContext();
   const conversationContext = buildConversationContext(session, 5);
   const projectsContext = getProjectsContext();
 
-  const finalizeSystemPrompt = `Ты — Chimera AI. Твоя задача — сформулировать чистый, понятный ответ пользователю.${projectsContext}
+  const finalizeSystemPrompt = `Ты — Chimera AI. Твоя задача — сформулировать чистый, понятный ответ пользователю.
+
+${visionContext}
+${projectsContext}
 
 ${conversationContext}
 
@@ -500,11 +549,15 @@ async function executeSimpleTask(
   // Всё это — внутренний контекст, пользователь его не увидит
 
   const toolsDescription = getToolDescriptions();
+  const visionCtx = getVisionContext();
   const projectsContext = getProjectsContext();
   const conversationContext = buildConversationContext(session, 10);
   const taskTreeContext = buildTaskTreeContext(session);
 
-  const workSystemPrompt = `Ты — Chimera AI, рабочий агент. Выполни задачу пользователя, используя доступные инструменты.${projectsContext}
+  const workSystemPrompt = `Ты — Chimera AI, рабочий агент. Выполни задачу пользователя, используя доступные инструменты.
+
+${visionCtx}
+${projectsContext}
 
 ${conversationContext}
 
@@ -805,10 +858,14 @@ async function handlePlanExecution(plan: ExecutionPlan, idempotencyKey?: string,
 // Execute single model mode
 async function executeSingleMode(task: string, provider: ModelProvider) {
   const model = getAvailableModels().find(m => m.provider === provider && m.available);
+  const singleVision = getVisionContext();
   const projectsContext = getProjectsContext();
   // Single mode — рабочий промпт, разрешаем свободный формат
   // Финализация произойдёт в handlePlanExecution через finalizeResponse
-  const singleSystemPrompt = `Ты — Chimera AI, эксперт по разработке. Выполни задачу полностью и конкретно.${projectsContext}
+  const singleSystemPrompt = `Ты — Chimera AI, эксперт по разработке. Выполни задачу полностью и конкретно.
+
+${singleVision}
+${projectsContext}
 
 Отвечай на том языке, на котором написана задача.
 Дай подробный технический ответ с конкретикой — файлы, функции, архитектура.
@@ -901,6 +958,7 @@ async function executeSwarmMode(originalMessage: string, session: string = 'main
 
   if (swarmResults.length > 0) {
     // Включаем контекст разговора в синтез
+    const swarmVision = getVisionContext();
     const historyContext = buildConversationContext(session, 5);
 
     // Обрезаем результаты команды для синтеза — не более 800 символов на каждого
@@ -909,7 +967,7 @@ async function executeSwarmMode(originalMessage: string, session: string = 'main
       return `**${r.member} (${r.provider}):**\n${trimmed}`;
     }).join('\n\n---\n\n');
 
-    const synthesisPrompt = `${historyContext ? historyContext + '\n\n' : ''}Результаты работы команды:
+    const synthesisPrompt = `${swarmVision}\n\n${historyContext ? historyContext + '\n\n' : ''}Результаты работы команды:
 
 ${trimmedResults}
 

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, DragEvent } from 'react';
 import {
   Plus,
   RefreshCw,
@@ -24,6 +24,9 @@ import {
   FileText,
   Mic,
   MicOff,
+  Upload,
+  Paperclip,
+  Image as ImageIcon,
 } from 'lucide-react';
 import { Project, ProjectAnalysis, ProjectIssue } from '@/types/project';
 
@@ -53,10 +56,14 @@ export function ProjectsDashboard() {
   const [chatInput, setChatInput] = useState('');
   const [isChatProcessing, setIsChatProcessing] = useState(false);
   const [isListening, setIsListening] = useState(false);
+  const [chatAttachments, setChatAttachments] = useState<File[]>([]);
+  const [isChatDragging, setIsChatDragging] = useState(false);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const recognitionRef = useRef<any>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const chatInputRef = useRef<HTMLTextAreaElement>(null);
+  const chatFileInputRef = useRef<HTMLInputElement>(null);
+  const chatDragCounterRef = useRef(0);
 
   // Voice input handler
   const toggleVoice = useCallback(() => {
@@ -323,6 +330,46 @@ export function ProjectsDashboard() {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       sendChatMessage();
+    }
+  };
+
+  const handleChatDragEnter = useCallback((e: DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    chatDragCounterRef.current++;
+    if (e.dataTransfer.types.includes('Files')) {
+      setIsChatDragging(true);
+    }
+  }, []);
+
+  const handleChatDragLeave = useCallback((e: DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    chatDragCounterRef.current--;
+    if (chatDragCounterRef.current === 0) {
+      setIsChatDragging(false);
+    }
+  }, []);
+
+  const handleChatDragOver = useCallback((e: DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+  }, []);
+
+  const handleChatDrop = useCallback((e: DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsChatDragging(false);
+    chatDragCounterRef.current = 0;
+    const files = Array.from(e.dataTransfer.files);
+    if (files.length > 0) {
+      setChatAttachments(prev => [...prev, ...files]);
+    }
+  }, []);
+
+  const handleChatFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files) {
+      setChatAttachments(prev => [...prev, ...Array.from(e.target.files!)]);
     }
   };
 
@@ -782,22 +829,87 @@ export function ProjectsDashboard() {
                 </div>
 
                 {/* Chat Input */}
-                <div className="border-t border-orchestrator-border bg-orchestrator-card p-4">
+                <div
+                  className={`relative border-t border-orchestrator-border bg-orchestrator-card p-4 transition-colors ${isChatDragging ? 'bg-orchestrator-accent/5' : ''}`}
+                  onDragEnter={handleChatDragEnter}
+                  onDragLeave={handleChatDragLeave}
+                  onDragOver={handleChatDragOver}
+                  onDrop={handleChatDrop}
+                >
+                  {/* Drop overlay */}
+                  {isChatDragging && (
+                    <div className="absolute inset-0 z-10 flex items-center justify-center rounded-lg border-2 border-dashed border-orchestrator-accent/50 bg-orchestrator-accent/10">
+                      <div className="flex items-center gap-2 text-orchestrator-accent">
+                        <Upload size={20} />
+                        <span className="font-medium">Отпустите файлы здесь</span>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Attachments preview */}
+                  {chatAttachments.length > 0 && (
+                    <div className="mb-2 flex flex-wrap gap-1.5">
+                      {chatAttachments.map((file, idx) => (
+                        <div key={idx} className="flex items-center gap-1.5 rounded-lg bg-orchestrator-bg px-2 py-1 text-xs">
+                          <span className="max-w-[120px] truncate">{file.name}</span>
+                          <button
+                            onClick={() => setChatAttachments(prev => prev.filter((_, i) => i !== idx))}
+                            className="text-gray-400 hover:text-white"
+                          >
+                            ×
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
                   <div className="flex gap-2">
-                    <textarea
-                      ref={chatInputRef}
-                      value={chatInput}
-                      onChange={(e) => {
-                        setChatInput(e.target.value);
-                        e.target.style.height = 'auto';
-                        e.target.style.height = Math.min(e.target.scrollHeight, 160) + 'px';
-                      }}
-                      onKeyDown={handleChatKeyDown}
-                      placeholder={`Спроси о ${selectedProject.name}...`}
-                      rows={2}
-                      className="flex-1 resize-none rounded-xl border border-orchestrator-border bg-orchestrator-bg px-4 py-3 text-sm text-white placeholder-gray-500 focus:border-orchestrator-accent focus:outline-none"
-                      style={{ minHeight: '56px', maxHeight: '160px' }}
-                    />
+                    <div className="flex-1">
+                      <textarea
+                        ref={chatInputRef}
+                        value={chatInput}
+                        onChange={(e) => {
+                          setChatInput(e.target.value);
+                          e.target.style.height = 'auto';
+                          e.target.style.height = Math.min(e.target.scrollHeight, 160) + 'px';
+                        }}
+                        onKeyDown={handleChatKeyDown}
+                        placeholder={`Спроси о ${selectedProject.name}... (или перетащи файлы)`}
+                        rows={2}
+                        className="w-full resize-none rounded-xl border border-orchestrator-border bg-orchestrator-bg px-4 py-3 text-sm text-white placeholder-gray-500 focus:border-orchestrator-accent focus:outline-none"
+                        style={{ minHeight: '56px', maxHeight: '160px' }}
+                      />
+                      <div className="mt-1 flex items-center gap-1">
+                        <input
+                          ref={chatFileInputRef}
+                          type="file"
+                          multiple
+                          accept="image/*,.pdf,.txt,.md,.json,.js,.ts,.py"
+                          onChange={handleChatFileSelect}
+                          className="hidden"
+                        />
+                        <button
+                          onClick={() => chatFileInputRef.current?.click()}
+                          className="rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-orchestrator-border hover:text-white"
+                          title="Прикрепить файл"
+                        >
+                          <Paperclip size={14} />
+                        </button>
+                        <button
+                          onClick={() => {
+                            if (chatFileInputRef.current) {
+                              chatFileInputRef.current.accept = 'image/*';
+                              chatFileInputRef.current.click();
+                              chatFileInputRef.current.accept = 'image/*,.pdf,.txt,.md,.json,.js,.ts,.py';
+                            }
+                          }}
+                          className="rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-orchestrator-border hover:text-white"
+                          title="Скриншот"
+                        >
+                          <ImageIcon size={14} />
+                        </button>
+                      </div>
+                    </div>
                     <div className="flex flex-col gap-1 self-end">
                       <button
                         onClick={toggleVoice}

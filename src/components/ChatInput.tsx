@@ -1,7 +1,7 @@
 'use client';
 
-import { useState, useRef, useEffect, useCallback, KeyboardEvent } from 'react';
-import { Send, Image, Paperclip, Mic, MicOff, Loader2 } from 'lucide-react';
+import { useState, useRef, useEffect, useCallback, KeyboardEvent, DragEvent } from 'react';
+import { Send, Image, Paperclip, Mic, MicOff, Loader2, Upload } from 'lucide-react';
 
 interface ChatInputProps {
   onSubmit: (message: string, attachments?: File[]) => void;
@@ -17,7 +17,9 @@ export function ChatInput({ onSubmit, isProcessing, placeholder, value, onChange
   const input = value !== undefined ? value : localInput;
   const setInput = onChange || setLocalInput;
   const [attachments, setAttachments] = useState<File[]>([]);
+  const [isDragging, setIsDragging] = useState(false);
   const [isListening, setIsListening] = useState(false);
+  const dragCounterRef = useRef(0);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const recognitionRef = useRef<any>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -90,8 +92,58 @@ export function ChatInput({ onSubmit, isProcessing, placeholder, value, onChange
     setAttachments(attachments.filter((_, i) => i !== index));
   };
 
+  const handleDragEnter = useCallback((e: DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current++;
+    if (e.dataTransfer.types.includes('Files')) {
+      setIsDragging(true);
+    }
+  }, []);
+
+  const handleDragLeave = useCallback((e: DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current--;
+    if (dragCounterRef.current === 0) {
+      setIsDragging(false);
+    }
+  }, []);
+
+  const handleDragOver = useCallback((e: DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+  }, []);
+
+  const handleDrop = useCallback((e: DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+    dragCounterRef.current = 0;
+
+    const files = Array.from(e.dataTransfer.files);
+    if (files.length > 0) {
+      setAttachments(prev => [...prev, ...files]);
+    }
+  }, []);
+
   return (
-    <div className="border-t border-orchestrator-border bg-orchestrator-card p-4">
+    <div
+      className={`relative border-t border-orchestrator-border bg-orchestrator-card p-4 transition-colors ${isDragging ? 'bg-orchestrator-accent/5' : ''}`}
+      onDragEnter={handleDragEnter}
+      onDragLeave={handleDragLeave}
+      onDragOver={handleDragOver}
+      onDrop={handleDrop}
+    >
+      {/* Drop overlay */}
+      {isDragging && (
+        <div className="absolute inset-0 z-10 flex items-center justify-center rounded-lg border-2 border-dashed border-orchestrator-accent/50 bg-orchestrator-accent/10">
+          <div className="flex items-center gap-2 text-orchestrator-accent">
+            <Upload size={24} />
+            <span className="text-lg font-medium">Отпустите файлы здесь</span>
+          </div>
+        </div>
+      )}
       {/* Attachments preview */}
       {attachments.length > 0 && (
         <div className="mb-3 flex flex-wrap gap-2">
