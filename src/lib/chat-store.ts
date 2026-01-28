@@ -35,23 +35,22 @@ export interface TaskTree {
 }
 
 // =============================================================================
-// Vision Context (permanent project identity)
+// Vision Context (configurable project identity)
 // =============================================================================
 
-const VISION_TEXT = `Chimera — AI-платформа, объединяющая несколько AI-моделей (Claude, GPT, Gemini, DeepSeek, Qwen, Grok) в одну систему. Автоматически выбирает лучшую модель или комбинацию для каждой задачи.
-
-Режимы оркестрации: Single (одна модель), Council (голосование), Swarm (параллельные агенты), Deliberation (итеративный code review), Debate (Pro vs Con + Judge).
-
-AI-команда: Alex (Lead Architect, Claude Opus), Max (Senior Dev, GPT-5.2), Lena (QA, Gemini), Ivan (Research, DeepSeek R1). Каждый использует лучшую доступную модель с автофоллбэком.
-
-Двухэтапная обработка: 1) Рабочий этап — модель работает с инструментами, код/JSON допустимы. 2) Финализация — чистый ответ пользователю.
-
-Стек: Next.js 14, TypeScript, Tailwind CSS, Railway (auto-deploy). Репо: github.com/Arrky1/chimera.
-
-Текущий статус: рабочий прототип — 6 провайдеров, 15+ моделей, проектный дашборд с GitHub-интеграцией, очередь сообщений, голосовой ввод, health-трекинг провайдеров, monitor-вкладка.`;
+let currentVisionText: string = '';
 
 export function getVisionContext(): string {
-  return `## О проекте Chimera\n${VISION_TEXT}`;
+  if (!currentVisionText.trim()) return '';
+  return `## О проекте\n${currentVisionText}`;
+}
+
+export function setVisionContext(text: string): void {
+  currentVisionText = text.slice(0, 5000); // limit to 5000 chars
+}
+
+export function getRawVisionText(): string {
+  return currentVisionText;
 }
 
 // =============================================================================

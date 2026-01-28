@@ -63,6 +63,8 @@ export default function Home() {
     return `session-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   });
   const [chatInputValue, setChatInputValue] = useState('');
+  const [visionText, setVisionText] = useState('');
+  const [visionSaving, setVisionSaving] = useState(false);
   const [currentMode, setCurrentMode] = useState<ExecutionMode>('single');
   const [modelStats, setModelStats] = useState<{
     provider: ModelProvider;
@@ -91,9 +93,10 @@ export default function Home() {
     }
   }, [messages]);
 
-  // Fetch available models on mount
+  // Fetch available models + load vision on mount
   useEffect(() => {
     fetchModels();
+    loadVision();
   }, []);
 
   const fetchModels = async () => {
@@ -104,6 +107,41 @@ export default function Home() {
     } catch (error) {
       console.error('Failed to fetch models:', error);
     }
+  };
+
+  const loadVision = async () => {
+    // Load from localStorage first (instant)
+    const stored = localStorage.getItem('chimera-vision-text');
+    if (stored) {
+      setVisionText(stored);
+    }
+    // Sync to server so it's available for prompts
+    try {
+      const text = stored || '';
+      await fetch('/api/settings/vision', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ vision: text }),
+      });
+    } catch {
+      // Server might not be ready yet
+    }
+  };
+
+  const saveVision = async (text: string) => {
+    setVisionSaving(true);
+    setVisionText(text);
+    localStorage.setItem('chimera-vision-text', text);
+    try {
+      await fetch('/api/settings/vision', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ vision: text }),
+      });
+    } catch (error) {
+      console.error('Failed to save vision:', error);
+    }
+    setVisionSaving(false);
   };
 
   const addMessage = (message: Omit<Message, 'id' | 'timestamp'>): Message => {
@@ -629,8 +667,35 @@ export default function Home() {
           <div className="flex-1 p-6 overflow-y-auto">
             <h2 className="text-xl font-semibold text-white mb-6">Settings</h2>
 
-            {/* API Keys */}
             <div className="space-y-6">
+              {/* Vision / Project Context */}
+              <div className="rounded-xl border border-orchestrator-border bg-orchestrator-card p-6">
+                <h3 className="text-lg font-medium text-white mb-2">Vision / Project Context</h3>
+                <p className="text-sm text-gray-400 mb-4">
+                  Опишите ваш проект — этот текст будет постоянным контекстом для AI во всех диалогах.
+                  Оставьте пустым, если не нужен.
+                </p>
+                <textarea
+                  value={visionText}
+                  onChange={(e) => setVisionText(e.target.value)}
+                  placeholder="Например: MyApp — SaaS-платформа для управления задачами. Стек: React, Node.js, PostgreSQL. Основные фичи: канбан-доска, уведомления, интеграция с GitHub..."
+                  rows={6}
+                  className="w-full rounded-lg border border-orchestrator-border bg-orchestrator-bg px-4 py-3 text-white placeholder-gray-500 resize-y focus:outline-none focus:border-orchestrator-accent"
+                  maxLength={5000}
+                />
+                <div className="mt-3 flex items-center justify-between">
+                  <span className="text-xs text-gray-500">{visionText.length} / 5000</span>
+                  <button
+                    onClick={() => saveVision(visionText)}
+                    disabled={visionSaving}
+                    className="rounded-lg bg-orchestrator-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-orchestrator-accent-hover disabled:opacity-50"
+                  >
+                    {visionSaving ? 'Сохранение...' : 'Сохранить'}
+                  </button>
+                </div>
+              </div>
+
+              {/* API Keys */}
               <div className="rounded-xl border border-orchestrator-border bg-orchestrator-card p-6">
                 <h3 className="text-lg font-medium text-white mb-4">API Keys</h3>
                 <div className="space-y-4">
