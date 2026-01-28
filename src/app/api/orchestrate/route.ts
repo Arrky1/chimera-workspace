@@ -29,6 +29,8 @@ import {
   needsSummarization,
   getMessagesForSummary,
   setChatSummary,
+  loadVisionFromRedis,
+  loadSummaryFromRedis,
 } from '@/lib/chat-store';
 import type { TaskNode } from '@/lib/chat-store';
 import { getAllProjects, getProjectContextSummary, hasProject, setProject } from '@/lib/project-store';
@@ -177,6 +179,9 @@ export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
 
+    // Load persistent data from Redis on first request after deploy
+    await loadVisionFromRedis();
+
     // Лог доступных моделей (для диагностики)
     const allModels = getAvailableModels();
     const availProviders = allModels.filter(m => m.available).map(m => `${m.provider}/${m.apiModel}`);
@@ -192,6 +197,9 @@ export async function POST(request: NextRequest) {
 
     // Session management
     const session = sessionId || 'main';
+
+    // Load summary from Redis if not in memory
+    await loadSummaryFromRedis(session);
 
     // Sync: если серверная история пуста (сервер перезагрузился), восстанавливаем из клиента
     const serverHistory = getChatHistory(session);

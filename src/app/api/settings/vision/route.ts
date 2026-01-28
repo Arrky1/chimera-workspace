@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getRawVisionText, setVisionContext } from '@/lib/chat-store';
+import { getRawVisionText, setVisionContext, loadVisionFromRedis } from '@/lib/chat-store';
 
 export async function GET() {
+  // Load from Redis first if not yet loaded
+  await loadVisionFromRedis();
   return NextResponse.json({ vision: getRawVisionText() });
 }
 

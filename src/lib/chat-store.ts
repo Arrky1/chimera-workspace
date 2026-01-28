@@ -4,7 +4,16 @@
  * Separate from project-store.ts which handles per-project chat.
  * This handles the main orchestration chat with session-based history
  * and a hierarchical task tree.
+ *
+ * Uses Upstash Redis for persistence with in-memory fallback.
  */
+
+import {
+  getVisionFromRedis,
+  setVisionInRedis,
+  getSummaryFromRedis,
+  setSummaryInRedis,
+} from './redis';
 
 // =============================================================================
 // Types
@@ -36,9 +45,11 @@ export interface TaskTree {
 
 // =============================================================================
 // Vision Context (configurable project identity)
+// Uses Redis with in-memory cache
 // =============================================================================
 
 let currentVisionText: string = '';
+let visionLoadedFromRedis = false;
 
 export function getVisionContext(): string {
   if (!currentVisionText.trim()) return '';
@@ -46,11 +57,27 @@ export function getVisionContext(): string {
 }
 
 export function setVisionContext(text: string): void {
-  currentVisionText = text.slice(0, 5000); // limit to 5000 chars
+  currentVisionText = text.slice(0, 5000);
+  // Fire-and-forget save to Redis
+  setVisionInRedis(text).catch(() => {});
 }
 
 export function getRawVisionText(): string {
   return currentVisionText;
+}
+
+/**
+ * Load vision from Redis on startup (call once on first request)
+ */
+export async function loadVisionFromRedis(): Promise<void> {
+  if (visionLoadedFromRedis) return;
+  visionLoadedFromRedis = true;
+
+  const redisVision = await getVisionFromRedis();
+  if (redisVision && !currentVisionText) {
+    currentVisionText = redisVision;
+    console.log(`[VisionContext] Loaded from Redis (${redisVision.length} chars)`);
+  }
 }
 
 // =============================================================================
@@ -108,6 +135,7 @@ export function clearChatHistory(sessionId: string = DEFAULT_SESSION): void {
 
 // =============================================================================
 // Chat Summary (for long conversations)
+// Uses Redis with in-memory cache
 // =============================================================================
 
 export function getChatSummary(sessionId: string = DEFAULT_SESSION): string | null {
@@ -118,6 +146,21 @@ export function setChatSummary(sessionId: string, summary: string): void {
   chatSummaries.set(sessionId, summary);
   const history = getChatHistory(sessionId);
   summaryMessageCounts.set(sessionId, history.length);
+  // Fire-and-forget save to Redis
+  setSummaryInRedis(sessionId, summary).catch(() => {});
+}
+
+/**
+ * Load summary from Redis for a session (call on first request for session)
+ */
+export async function loadSummaryFromRedis(sessionId: string = DEFAULT_SESSION): Promise<void> {
+  if (chatSummaries.has(sessionId)) return; // Already loaded
+
+  const redisSummary = await getSummaryFromRedis(sessionId);
+  if (redisSummary) {
+    chatSummaries.set(sessionId, redisSummary);
+    console.log(`[ChatSummary] Loaded from Redis for ${sessionId}`);
+  }
 }
 
 /**
